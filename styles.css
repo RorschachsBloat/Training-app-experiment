@@ -71,3 +71,29 @@
 /* Optional verified cloud login and administrator view */
 .auth-panel{max-width:520px;margin:0 auto}.auth-switch{display:block;margin:18px auto}.auth-message{margin:18px 0;color:#b5f3d8;font-size:12px;line-height:1.6}
 .admin-launch{display:block;width:100%;margin:14px 0 0}.admin-list{display:grid;gap:9px;margin-bottom:20px}.admin-user{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;padding:15px;border:1px solid #395648;border-radius:12px;background:#192a31;color:var(--text)}.admin-user strong,.admin-user small,.admin-programme b,.admin-programme small{display:block}.admin-user strong{font-size:14px}.admin-user small{font-size:11px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere}.admin-numbers{white-space:nowrap;text-align:right;font-size:10px;color:#a5d2bf;line-height:1.8}.admin-details h3{margin-bottom:5px}.admin-programme{padding:13px 0;border-top:1px solid var(--line)}.admin-programme b{font-size:12px}.admin-programme small{color:var(--muted);font-size:11px;margin-top:4px}
+
+/* PEAK 4 — account email, recovery, and read-only coach logs */
+.account-email{background:#16282f;border:1px solid #375b51;border-radius:14px;padding:16px;margin:14px 0 3px}
+.account-email>span{display:block;font-size:11px;color:var(--muted);margin-bottom:5px}
+.account-email>strong{display:block;font-size:14px;overflow-wrap:anywhere;margin-bottom:12px}
+.account-email .pair{display:flex;gap:8px;flex-wrap:wrap}
+.account-email .btn{font-size:11px;flex:1;min-width:125px}
+.admin-user.selected{border-color:var(--accent);background:#234339}
+.admin-programmes{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}
+.admin-programmes .btn{font-size:11px;white-space:normal}
+.admin-log-summary{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;align-items:center;padding:12px 0;border-top:1px solid #34504a;border-bottom:1px solid #34504a;margin:18px 0 14px}
+.admin-log-summary b{font-size:13px}
+.admin-log-summary span{color:var(--muted);font-size:11px}
+.admin-session{margin:9px 0 16px;border:1px solid #355049;border-radius:13px;overflow:hidden}
+.admin-session summary{padding:14px;background:#20343a;cursor:pointer;font-size:12px;font-weight:800;line-height:1.6}
+.admin-session summary span{font-weight:500;font-size:11px;color:#a2c5b8;display:block}
+.admin-set{padding:12px 14px;border-top:1px solid #30484a;background:#17282e}
+.admin-set.is-skipped{opacity:.8}
+.admin-set-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+.admin-set-title strong{font-size:12px;overflow-wrap:anywhere}
+.admin-set-title span{font-size:11px;color:#96cdb6;text-align:right}
+.admin-set-title .warn{color:#f5ae9b}
+.admin-set-values{display:flex;flex-wrap:wrap;gap:7px 14px;font-size:11px;color:#aac2c1;line-height:1.6}
+.admin-set-values b{color:#f2fbf8}
+.admin-logged-at{display:block;font-size:10px;color:#90adb2;margin-top:7px}
+.auth-panel .auth-switch+.auth-switch{margin-top:9px}

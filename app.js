@@ -1,6 +1,6 @@
 (async function(){'use strict';
 const $=id=>document.getElementById(id),C=window.PeakCore,Imp=window.PeakImport,Cloud=window.PeakCloud,cloudMode=Boolean(Cloud?.enabled);
-let authSignup=false,authNotice='',adminCache=null,adminSelected=null;
+let authMode='login',authNotice='',adminCache=null,adminSelected=null,adminDocs=null,adminProgramme=null,adminLoading=false,adminError='';
 const DB='peak-training-data', DBVER=2;let db,programs=[],profiles=[],profile=null,enrolled={},states={},activeId='',P=null,S=null,view='profiles',week=1,sessionId='',toastTimer=null,pendingImport=null,installPrompt=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=n=>Number(n||0).toLocaleString('en-GB',{maximumFractionDigits:1}),f=n=>Number(n||0).toFixed(1).replace(/\.0$/,''),slug=s=>String(s||'').replace(/[^a-z0-9]+/ig,'_').slice(0,60);
@@ -64,30 +64,68 @@ function activeWeek(){return P.weeks.find(w=>w.week===week)}
 function session(){return P.sessions.find(x=>x.id===sessionId)||P.sessions[0]}
 function logsFor(s){return C.logCount(S,s)}
 function updatedStatus(){const online=navigator.onLine;$('offlineBadge').textContent=online?'● ONLINE':'● OFFLINE';$('offlineBadge').classList.toggle('off',!online)}
-function header(){document.querySelectorAll('[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===view));document.body.classList.toggle('no-profile',!profile);$('profileShortcut').textContent=profile?profile.name.slice(0,1).toUpperCase():'+';$('profileShortcut').setAttribute('aria-label',profile?'Open '+profile.name+' profile':'Choose profile')}
+function header(){document.querySelectorAll('[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===view));document.body.classList.toggle('no-profile',!profile||(cloudMode&&Cloud.recoveryPending));$('profileShortcut').textContent=profile?profile.name.slice(0,1).toUpperCase():'+';$('profileShortcut').setAttribute('aria-label',profile?'Open '+profile.name+' profile':'Choose profile')}
 function loadRatio(group){return Object.values(S.config.maxes).map(Number).reduce((a,b)=>a+b,0)}
 function cardProgramme(p){const added=isEnrolled(p.id);const state=added?(states[p.id]||freshState(p)):freshState(p);const total=p.sessions.reduce((n,s)=>n+countSets(s),0),logged=Object.values(state.logs||{}).filter(x=>x&&(x.done||C.hasNum(x.weight)||C.hasNum(x.rpe))).length;
  return `<article class="programme ${p.id===activeId?'is-active':''}"><div class="programmetop"><span class="programicon">${p.id===activeId?'▲':'▦'}</span><span class="version">${added?'IN YOUR PROFILE':'AVAILABLE'} · v${esc(p.version||1)}</span></div><h3>${esc(p.title)}</h3><p>${esc(p.description||'Custom strength programme')}</p><div class="mutedrow"><span>${p.weeks.length} weeks</span><span>${p.sessions.length} sessions</span>${added?`<span>${logged}/${total} sets logged</span>`:''}</div>${added?`<div class="progressbar"><span style="width:${Math.min(100,100*logged/Math.max(1,total))}%"></span></div>`:''}<div class="pair"><button class="btn ${added&&p.id===activeId?'btn-outline':'btn-primary'}" data-open-programme="${esc(p.id)}">${added?(p.id===activeId?'Continue training':'Switch to programme'):'＋ Add to my profile'}</button>${added?`<button class="btn btn-danger-ghost" data-remove-programme="${esc(p.id)}" aria-label="Remove programme from your profile">Remove</button>`:''}</div></article>`}
 function authView(){
- const extra=authSignup?`<label for="authUsername">Username</label><input id="authUsername" name="username" required minlength="3" maxlength="30" autocomplete="username" placeholder="e.g. AlexTraining">`:'';
- return `<div class="profile-welcome"><span class="eyebrow">PEAK SECURE ACCOUNTS</span><h1>${authSignup?'Create your':'Welcome back to'}<br><span class="accent">PEAK Training.</span></h1><p>${authSignup?'Create a password-protected account to save your programmes and training across devices.':'Sign in to your private athlete account. Your training is stored in the cloud.'}</p></div><div class="panel auth-panel"><h3>${authSignup?'Create account':'Sign in'}</h3><form id="${authSignup?'signupAuthForm':'loginAuthForm'}" class="profile-form">${extra}<label for="authEmail">Email</label><input id="authEmail" name="email" type="email" autocomplete="email" required placeholder="name@example.com"><label for="authPassword">Password</label><input id="authPassword" type="password" name="password" minlength="${authSignup?'12':'1'}" autocomplete="${authSignup?'new-password':'current-password'}" required placeholder="${authSignup?'12+ characters':'Your password'}"><button class="btn btn-primary" type="submit">${authSignup?'Create account':'Sign in'} →</button></form><button class="textlink auth-switch" data-action="authswitch">${authSignup?'Already have an account? Sign in':'New here? Create an account'}</button>${authNotice?`<p class="auth-message" role="status">${esc(authNotice)}</p>`:''}<p class="micro">Online accounts use Supabase authentication. Passwords are never saved in PEAK website files.</p></div>`;
+ if(Cloud.recoveryPending)authMode='reset';
+ if(authMode==='reset')return `<div class="profile-welcome"><span class="eyebrow">PEAK ACCOUNT RECOVERY</span><h1>Choose a new<br><span class="accent">password.</span></h1><p>Your email recovery link was accepted. Set a new password to secure your PEAK account.</p></div><div class="panel auth-panel"><h3>Reset password</h3><form id="resetPasswordForm" class="profile-form"><label for="resetPassword">New password</label><input id="resetPassword" name="password" type="password" required minlength="12" autocomplete="new-password"><label for="resetPasswordAgain">Confirm password</label><input id="resetPasswordAgain" name="confirm" type="password" required minlength="12" autocomplete="new-password"><button class="btn btn-primary" type="submit">Save new password →</button></form>${authNotice?`<p class="auth-message" role="status">${esc(authNotice)}</p>`:''}<p class="micro">If this recovery link has expired, sign out and request another from the sign-in page.</p></div>`;
+ if(authMode==='forgot')return `<div class="profile-welcome"><span class="eyebrow">PEAK ACCOUNT RECOVERY</span><h1>Recover your<br><span class="accent">account.</span></h1><p>Enter your registered email address to request a password reset link.</p></div><div class="panel auth-panel"><h3>Forgot password?</h3><form id="forgotPasswordForm" class="profile-form"><label for="recoveryEmail">Account email</label><input id="recoveryEmail" name="email" type="email" autocomplete="email" required placeholder="name@example.com"><button class="btn btn-primary" type="submit">Email reset link →</button></form><button class="textlink auth-switch" data-action="authlogin">← Back to sign in</button>${authNotice?`<p class="auth-message" role="status">${esc(authNotice)}</p>`:''}<p class="micro">For your privacy, we do not confirm whether an email is registered.</p></div>`;
+ const signingUp=authMode==='signup';
+ const extra=signingUp?`<label for="authUsername">Username</label><input id="authUsername" name="username" required minlength="3" maxlength="30" autocomplete="username" placeholder="e.g. AlexTraining">`:'';
+ return `<div class="profile-welcome"><span class="eyebrow">PEAK SECURE ACCOUNTS</span><h1>${signingUp?'Create your':'Welcome back to'}<br><span class="accent">PEAK Training.</span></h1><p>${signingUp?'Create a password-protected account to save your programmes and training across devices.':'Sign in to your private athlete account. Your training is stored in the cloud.'}</p></div><div class="panel auth-panel"><h3>${signingUp?'Create account':'Sign in'}</h3><form id="${signingUp?'signupAuthForm':'loginAuthForm'}" class="profile-form">${extra}<label for="authEmail">Email</label><input id="authEmail" name="email" type="email" autocomplete="email" required placeholder="name@example.com"><label for="authPassword">Password</label><input id="authPassword" type="password" name="password" minlength="${signingUp?'12':'1'}" autocomplete="${signingUp?'new-password':'current-password'}" required placeholder="${signingUp?'12+ characters':'Your password'}"><button class="btn btn-primary" type="submit">${signingUp?'Create account':'Sign in'} →</button></form>${!signingUp?'<button class="textlink auth-switch" data-action="authforgot">Forgot password?</button>':''}<button class="textlink auth-switch" data-action="authswitch">${signingUp?'Already have an account? Sign in':'New here? Create an account'}</button>${authNotice?`<p class="auth-message" role="status">${esc(authNotice)}</p>`:''}<p class="micro">Online accounts use Supabase authentication. Passwords are never saved in PEAK website files.</p></div>`;
 }
 function adminView(){
  if(!cloudMode||Cloud.account?.role!=='admin')return `<div class="empty">You do not have administrator access.</div>`;
  if(!adminCache)return `<div class="pagehead"><h1>Admin dashboard<span class="accent">.</span></h1><p>Loading authorised accounts…</p></div>`;
- const {accounts,documents}=adminCache;
- const ownerDocs=id=>documents.filter(d=>d.owner_id===id);
+ const {accounts}=adminCache;
+ const rows=accounts.map(a=>`<button class="admin-user ${a.id===adminSelected?'selected':''}" data-admin-user="${esc(a.id)}"><span><strong>${esc(a.username)}</strong><small>${esc(a.email)} · ${esc(a.role)}</small></span><span class="admin-numbers">View training →</span></button>`).join('');
  const person=accounts.find(a=>a.id===adminSelected);
- const rows=accounts.map(a=>{
-  const docs=ownerDocs(a.id),links=docs.filter(d=>d.kind==='enrolments'),logs=docs.filter(d=>d.kind==='profileStates').reduce((n,d)=>n+Object.values(d.content?.data?.logs||{}).filter(v=>v&&(v.done||C.hasNum(v.weight)||C.hasNum(v.rpe)||C.hasNum(v.reps))).length,0);
-  return `<button class="admin-user" data-admin-user="${esc(a.id)}"><span><strong>${esc(a.username)}</strong><small>${esc(a.email)} · ${esc(a.role)}</small></span><span class="admin-numbers">${links.length} programmes<br>${logs} logged sets</span></button>`;
- }).join('');
  let details='';
  if(person){
-  const docs=ownerDocs(person.id),links=docs.filter(d=>d.kind==='enrolments'),states=docs.filter(d=>d.kind==='profileStates');
-  details=`<div class="panel admin-details"><h3>${esc(person.username)} — read-only overview</h3><p class="muted">${esc(person.email)} · Joined ${esc(new Date(person.created_at).toLocaleDateString('en-GB'))}</p>${links.length?links.map(l=>{const prog=String(l.content?.programId||l.doc_id),st=states.find(x=>x.content?.programId===prog)?.content?.data,values=Object.values(st?.logs||{}),logged=values.filter(v=>v&&(v.done||C.hasNum(v.weight)||C.hasNum(v.rpe)||C.hasNum(v.reps))).length,skipped=values.filter(v=>v?.status==='skipped').length;return `<div class="admin-programme"><b>${esc(prog)}</b><small>${logged} sets logged · ${skipped} skipped · Week ${esc(st?.week||1)}</small></div>`}).join(''):'<p>No programmes added.</p>'}</div>`;
+  if(adminLoading)details=`<div class="panel admin-details"><h3>${esc(person.username)} — training history</h3><p>Loading this athlete's programmes and logs…</p></div>`;
+  else if(adminError)details=`<div class="panel admin-details"><h3>Unable to load training logs</h3><p class="warn">${esc(adminError)}</p></div>`;
+  else if(adminDocs){
+   const docs=adminDocs,links=docs.filter(d=>d.kind==='enrolments'),states=docs.filter(d=>d.kind==='profileStates');
+   const ids=[...new Set([...links.map(d=>d.content?.programId),...states.map(d=>d.content?.programId)].filter(Boolean))];
+   const selected=ids.includes(adminProgramme)?adminProgramme:ids[0];
+   const menu=ids.map(id=>{const programme=docs.find(d=>d.kind==='programmes'&&d.content?.id===id)?.content||programs.find(p=>p.id===id);return `<button class="btn ${selected===id?'btn-primary':'btn-outline'}" data-admin-program="${esc(id)}">${esc(programme?.title||id)}</button>`}).join('');
+   const current=states.find(d=>d.content?.programId===selected)?.content?.data;
+   const programme=docs.find(d=>d.kind==='programmes'&&d.content?.id===selected)?.content||programs.find(p=>p.id===selected);
+   details=`<div class="panel admin-details"><h3>${esc(person.username)} — training history</h3><p class="muted">${esc(person.email)} · Joined ${esc(new Date(person.created_at).toLocaleDateString('en-GB'))}</p>${ids.length?`<div class="admin-programmes">${menu}</div>${adminTrainingDetails(programme,current)}`:'<p>This athlete has no saved programmes or training logs yet.</p>'}<p class="micro">Read-only. These are the athlete’s recorded values, not editable coaching targets.</p></div>`;
+  }
  }
- return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>All athlete accounts<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'} · read-only overview. The database enforces admin access; other athletes cannot view these records.</p></div><div class="admin-list">${rows}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
+ return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>Athlete training logs<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'}. Select an athlete, then a programme, to inspect their logged training. Other athletes cannot view these records.</p></div><div class="admin-list">${rows||'<p>No registered accounts found.</p>'}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
+}
+function adminTrainingDetails(programme,state){
+ if(!state)return '<p class="empty">No saved training state for this programme.</p>';
+ const logs=state.logs||{}, sessions=programme?.sessions||[];
+ const hasEntry=log=>log&&(log.done||log.status==='skipped'||C.hasNum(log.weight)||C.hasNum(log.rpe)||C.hasNum(log.reps));
+ const sessionBlocks=[];const mapped=new Set();
+ for(const session of sessions){
+  const entries=[];
+  for(const set of session.sets||[]){
+   const count=set.kind==='ACC'?(Number(set.count)||1):1;
+   for(let i=1;i<=count;i++){
+    const key=set.kind==='ACC'?set.id+'_s'+i:set.id,log=logs[key];mapped.add(key);
+    if(!hasEntry(log))continue;
+    const prescribed=Number(set.reps),actual=C.hasNum(log.reps)?Number(log.reps):null;
+    const missed=actual!==null&&Number.isFinite(prescribed)?Math.max(0,prescribed-actual):0;
+    const label=set.kind==='ACC'?`Set ${i}`:`${set.step||'Set'}`;
+    const status=log.status==='skipped'?'Skipped':missed?`${missed} missed rep${missed===1?'':'s'}`:log.done?'Completed':'Logged';
+    entries.push(`<div class="admin-set ${log.status==='skipped'?'is-skipped':''}"><div class="admin-set-title"><strong>${esc(set.name||set.code||'Movement')}</strong><span class="${missed?'warn':''}">${esc(status)}</span></div><div class="admin-set-values"><span>${esc(label)}</span><span>Reps: <b>${actual===null?'—':esc(actual)} / ${esc(set.repsText||set.reps||'—')}</b></span><span>Weight: <b>${C.hasNum(log.weight)?esc(log.weight)+' kg':'—'}</b></span><span>RPE: <b>${C.hasNum(log.rpe)?esc(log.rpe):'—'}</b></span></div>${log.at?`<small class="admin-logged-at">Saved ${esc(new Date(log.at).toLocaleString('en-GB'))}</small>`:''}</div>`);
+   }
+  }
+  const readiness=state.readiness?.[session.id];
+  if(entries.length||readiness){
+   sessionBlocks.push(`<details class="admin-session" open><summary>Week ${esc(session.week)} · Day ${esc(session.day)} — ${esc(session.title)} <span>${entries.length} sets${readiness?' · Readiness '+esc(readiness)+'/5':''}</span></summary>${entries.join('')||'<p class="muted">Readiness recorded, but no sets logged.</p>'}</details>`);
+  }
+ }
+ const other=Object.entries(logs).filter(([key,log])=>!mapped.has(key)&&hasEntry(log));
+ if(other.length)sessionBlocks.push(`<details class="admin-session"><summary>Other recorded sets (${other.length})</summary>${other.map(([key,log])=>`<div class="admin-set"><div class="admin-set-title"><strong>${esc(key)}</strong><span>${log.status==='skipped'?'Skipped':'Logged'}</span></div><div class="admin-set-values"><span>Reps: ${C.hasNum(log.reps)?esc(log.reps):'—'}</span><span>Weight: ${C.hasNum(log.weight)?esc(log.weight)+' kg':'—'}</span><span>RPE: ${C.hasNum(log.rpe)?esc(log.rpe):'—'}</span></div></div>`).join('')}</details>`);
+ const count=Object.values(logs).filter(hasEntry).length,skipped=Object.values(logs).filter(l=>l?.status==='skipped').length;
+ return `<div class="admin-log-summary"><b>${count} recorded set${count===1?'':'s'}</b><span>${skipped} skipped · Current week ${esc(state.week||1)}</span></div>${sessionBlocks.join('')||'<p class="empty">No logged workouts for this programme yet.</p>'}`;
 }
 function chooser(){if(cloudMode)return authView();return `<div class="profile-welcome"><div class="eyebrow"><span class="pulse"></span> WELCOME TO PEAK</div><h1>Your training.<br><span class="accent">Your profile.</span></h1><p>Create a profile to save your own programmes, training logs and progress on this device.</p></div>
  <div class="panel"><h3>Create a profile</h3><form id="createProfileForm" class="profile-form"><label for="profileName">Profile name</label><input required minlength="2" maxlength="40" id="profileName" name="name" placeholder="e.g. Alex" autocomplete="nickname"><button class="btn btn-primary" type="submit">Create profile →</button></form></div>
@@ -95,6 +133,7 @@ function chooser(){if(cloudMode)return authView();return `<div class="profile-we
  <div class="importactions"><button class="btn btn-outline" data-action="restore">↑ Restore existing PEAK backup</button></div><p class="micro">Profiles in this version are local to this browser, not password-protected accounts. To access your training on another device, make a JSON backup and restore it there.</p>`}
 function profileView(){if(!profile)return chooser();const mine=programs.filter(p=>isEnrolled(p.id)),available=programs.filter(p=>!isEnrolled(p.id));return `<div class="profile-hero"><div class="profile-initial profile-initial-large">${esc(profile.name.slice(0,1).toUpperCase())}</div><div><span class="eyebrow">YOUR ATHLETE PROFILE</span><h1>${esc(profile.name)}<span class="accent">.</span></h1><p>Joined ${esc(new Date(profile.createdAt).toLocaleDateString('en-GB',{month:'short',year:'numeric'}))}</p></div></div>
  <div class="profile-actions"><button class="btn btn-outline" data-action="renameprofile">Edit name</button>${cloudMode?`<button class="btn btn-outline" data-action="signout">Sign out</button>`:`<button class="btn btn-outline" data-action="switchprofile">Switch profile</button>`}</div>${cloudMode&&Cloud.account?.role==='admin'?`<button class="btn btn-primary admin-launch" data-action="admin">View all athlete accounts →</button>`:``}
+ ${cloudMode?`<div class="account-email"><span>Sign-in email</span><strong>${esc(Cloud.user?.email||Cloud.account?.email||'Not available')}</strong><div class="pair"><button class="btn btn-outline" data-action="refreshaccount">↻ Refresh email</button><button class="btn btn-outline" data-action="changeemail">Change email</button></div></div>`:''}
  <div class="sectiontitle profile-section"><div><span class="eyebrow">SAVED TO YOUR PROFILE</span><h2>My programmes</h2></div><span class="pill">${mine.length} added</span></div>
  ${mine.length?`<div class="programme-list">${mine.map(cardProgramme).join('')}</div>`:`<div class="empty-profile"><span>▦</span><h3>No programmes yet</h3><p>Pick a programme below to add it to your profile and start tracking.</p></div>`}
  ${available.length?`<div class="sectiontitle profile-section"><div><span class="eyebrow">PROGRAMME CATALOGUE</span><h2>Explore programmes</h2></div></div><div class="programme-list">${available.map(cardProgramme).join('')}</div>`:''}
@@ -259,7 +298,8 @@ async function initData(preferredProfile){
  await loadProfile(selected);
 }
 document.addEventListener('click',async e=>{
- const selectedAdmin=e.target.closest('[data-admin-user]');if(selectedAdmin&&cloudMode&&Cloud.account?.role==='admin'){adminSelected=selectedAdmin.dataset.adminUser;render();return}
+ const selectedAdmin=e.target.closest('[data-admin-user]');if(selectedAdmin&&cloudMode&&Cloud.account?.role==='admin'){adminSelected=selectedAdmin.dataset.adminUser;adminDocs=null;adminProgramme=null;adminLoading=true;adminError='';render();try{adminDocs=await Cloud.adminAthleteDocuments(adminSelected)}catch(err){adminError=err.message}finally{adminLoading=false;render()}return}
+ const selectedProgramme=e.target.closest('[data-admin-program]');if(selectedProgramme&&cloudMode&&Cloud.account?.role==='admin'){adminProgramme=selectedProgramme.dataset.adminProgram;render();return}
  const chosen=e.target.closest('[data-choose-profile]');if(chosen){const person=profiles.find(p=>p.id===chosen.dataset.chooseProfile);if(person){await loadProfile(person);render()}return}
  const ready=e.target.closest('[data-readiness]');if(ready&&S){const n=Number(ready.dataset.readiness);S.readiness=S.readiness||{};S.readiness[sessionId]=n;await saveState();render();alertUser('Session readiness set to '+n+'/5');return}
  const nav=e.target.closest('[data-nav]');if(nav){switchTo(nav.dataset.nav);return}
@@ -269,10 +309,14 @@ document.addEventListener('click',async e=>{
  const del=e.target.closest('[data-remove-programme]');if(del){await unenrol(del.dataset.removeProgramme);return}
  const a=e.target.closest('[data-action]');if(!a)return;const cmd=a.dataset.action;
  if(['home','library','progress','settings','profile','profiles'].includes(cmd)){switchTo(cmd);return}
- if(cmd==='authswitch'){authSignup=!authSignup;authNotice='';render();return}
- if(cmd==='signout'&&cloudMode){await Cloud.signout();profile=null;profiles=[];programs=[];enrolled={};states={};activeId='';P=null;S=null;adminCache=null;authNotice='Signed out.';view='profiles';render();return}
- if(cmd==='admin'&&cloudMode&&Cloud.account?.role==='admin'){view='admin';adminCache=await Cloud.adminOverview();adminSelected=null;render();return}
- if(cmd==='adminrefresh'&&cloudMode&&Cloud.account?.role==='admin'){adminCache=await Cloud.adminOverview();render();alertUser('Account list refreshed');return}
+ if(cmd==='authswitch'){authMode=authMode==='signup'?'login':'signup';authNotice='';render();return}
+ if(cmd==='authforgot'){authMode='forgot';authNotice='';render();return}
+ if(cmd==='authlogin'){authMode='login';authNotice='';render();return}
+ if(cmd==='signout'&&cloudMode){await Cloud.signout();profile=null;profiles=[];programs=[];enrolled={};states={};activeId='';P=null;S=null;adminCache=null;adminDocs=null;adminSelected=null;authMode='login';authNotice='Signed out.';view='profiles';render();return}
+ if(cmd==='admin'&&cloudMode&&Cloud.account?.role==='admin'){view='admin';adminSelected=null;adminDocs=null;adminError='';try{adminCache=await Cloud.adminOverview()}catch(err){alertUser(err.message);return}render();return}
+ if(cmd==='adminrefresh'&&cloudMode&&Cloud.account?.role==='admin'){try{adminCache=await Cloud.adminOverview();adminSelected=null;adminDocs=null;render();alertUser('Account list refreshed')}catch(err){alertUser(err.message)}return}
+ if(cmd==='refreshaccount'&&cloudMode){try{await Cloud.refresh();render();alertUser('Account details refreshed')}catch(err){alertUser(err.message)}return}
+ if(cmd==='changeemail'&&cloudMode){showModal(`<div class="eyebrow">ACCOUNT EMAIL</div><h2>Change sign-in email</h2><p>Supabase may require confirmation at both the current and new email addresses.</p><form id="changeEmailForm" class="profile-form"><label for="newAccountEmail">New email</label><input type="email" id="newAccountEmail" name="email" required autocomplete="email"><div class="btnrow"><button type="button" class="btn btn-outline" data-action="cancelmodal">Cancel</button><button class="btn btn-primary" type="submit">Request change</button></div></form>`);return}
  if(cmd==='switchprofile'){if(cloudMode){alertUser('Sign out to change online accounts');return}await loadProfile(null);render();return}
  if(cmd==='renameprofile'&&profile){showModal(`<div class="eyebrow">EDIT PROFILE</div><h2>Change profile name</h2><form id="renameProfileForm" class="profile-form"><label for="renameName">Display name</label><input id="renameName" name="name" required minlength="2" maxlength="40" value="${esc(profile.name)}"><div class="btnrow"><button type="button" class="btn btn-outline" data-action="cancelmodal">Cancel</button><button type="submit" class="btn btn-primary">Save changes</button></div></form>`);return}
  if(cmd==='deleteprofile'&&profile){const person=profile;if(!confirm(`Permanently delete ${person.name}'s local profile and ALL of their saved programmes, logs and settings? Export a backup first if needed.`))return;
@@ -295,11 +339,27 @@ document.addEventListener('submit',async e=>{
   try{
    if(e.target.id==='signupAuthForm'){
     const signedIn=await Cloud.signup(fd.get('username'),email,password);
-    if(!signedIn){authSignup=false;authNotice='Check your email for a confirmation link, then sign in.';render();return}
+    if(!signedIn){authMode='login';authNotice='Check your email for a confirmation link, then sign in.';render();return}
    }else await Cloud.login(email,password);
-   await initData();authNotice='';render();alertUser('Signed in securely');
+   await initData();authMode='login';authNotice='';render();alertUser('Signed in securely');
   }catch(err){authNotice=err.message;render()}
   return;
+ }
+ if(cloudMode&&e.target.id==='forgotPasswordForm'){
+  e.preventDefault();const fd=new FormData(e.target),email=String(fd.get('email')||'').trim();const btn=e.target.querySelector('[type=submit]');btn.disabled=true;
+  try{await Cloud.sendPasswordReset(email);authNotice='If an account exists for this email, a recovery link has been sent. Check your inbox and spam folder.'}catch(err){authNotice='Unable to send email: '+err.message}
+  render();return;
+ }
+ if(cloudMode&&e.target.id==='resetPasswordForm'){
+  e.preventDefault();const fd=new FormData(e.target),password=String(fd.get('password')||''),confirmation=String(fd.get('confirm')||'');
+  if(password!==confirmation){authNotice='The two passwords do not match.';render();return}
+  const btn=e.target.querySelector('[type=submit]');btn.disabled=true;
+  try{await Cloud.finishPasswordReset(password);authMode='login';authNotice='';await initData();switchTo('profile');alertUser('Password successfully changed')}
+  catch(err){authNotice=err.message;render()}return;
+ }
+ if(cloudMode&&e.target.id==='changeEmailForm'){
+  e.preventDefault();const newEmail=String(new FormData(e.target).get('email')||'').trim();
+  try{await Cloud.changeEmail(newEmail);closedModal();alertUser('Email change requested. Confirm the email messages before signing in with the new address.')}catch(err){alertUser(err.message)}return;
  }
  if(e.target.id==='createProfileForm'){e.preventDefault();await createProfile(new FormData(e.target).get('name'))}
  if(e.target.id==='renameProfileForm'){e.preventDefault();const name=String(new FormData(e.target).get('name')||'').trim().replace(/\s+/g,' ');if(!profile||name.length<2||name.length>40){alertUser('Enter a name from 2 to 40 characters');return}profile.name=name;await put('profiles',profile);closedModal();render();alertUser('Name updated')}
@@ -314,7 +374,8 @@ document.addEventListener('change',async e=>{const t=e.target;if(t.id==='importF
  else if(t.dataset.setting)await updateSetting(t.dataset.setting,t.dataset.key,t.value)
 });
 $('modal').addEventListener('click',e=>{if(e.target===$('modal'))closedModal()});
+window.addEventListener('peak-password-recovery',()=>{authMode='reset';authNotice='';view='profiles';render()});
 window.addEventListener('online',updatedStatus);window.addEventListener('offline',updatedStatus);
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e});
-try{if(cloudMode){await Cloud.initialize();if(Cloud.user)await initData();else view='profiles'}else{db=await openDB();await initData()}render();if('serviceWorker' in navigator&&location.protocol!=='file:'){navigator.serviceWorker.register('./sw.js').catch(console.error)}}catch(e){console.error(e);$('main').innerHTML=`<div class="pagehead"><h1>Unable to open your data</h1><p>${esc(e.message)}. Please check browser storage permissions and reload.</p></div>`}
+try{if(cloudMode){await Cloud.initialize();if(Cloud.user&&!Cloud.recoveryPending)await initData();else view='profiles';if(Cloud.recoveryPending)authMode='reset'}else{db=await openDB();await initData()}render();if('serviceWorker' in navigator&&location.protocol!=='file:'){navigator.serviceWorker.register('./sw.js').catch(console.error)}}catch(e){console.error(e);$('main').innerHTML=`<div class="pagehead"><h1>Unable to open your data</h1><p>${esc(e.message)}. Please check browser storage permissions and reload.</p></div>`}
 })();
