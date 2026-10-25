@@ -1,20 +1,27 @@
-# Replace your current PEAK GitHub Pages site with v2
+# Update PEAK Training on GitHub Pages — version 3
 
-1. **Back up your current training first:** open your existing PEAK site, select **Progress → Download full JSON backup**, and store the file safely.
-2. Unzip the new `PEAK_Training_v2_Profiles_GitHub_Pages.zip`.
-3. In your **existing** GitHub repository, open the folder containing `index.html` (usually the repository root).
-4. Choose **Add file → Upload files**. Drag **all files from the extracted ZIP folder**, including `index.html`, `app.js`, `styles.css`, `core.js`, `xlsx-import.js`, `builtin-program.json`, `sw.js`, the images, and supporting files. Do **not** upload the ZIP as one file, and do **not** put everything in a new nested folder.
-5. Confirm replacement of the same-named files and select **Commit changes**. GitHub Pages will redeploy from your existing branch/root configuration; you do not need a new repository.
-6. Open your existing GitHub Pages URL and refresh again if the previous design still appears. If necessary, open the browser in a new tab or clear only the site's cache (not its stored data). Avoid clearing site data because it includes your training logs.
-7. Create a profile, or if you previously had saved logs, choose the automatically migrated **My training** profile. Add **Example #1** to the profile if it is not already added.
+## Before uploading
 
-The existing programme's internal ID remains `peak-105-classic` so training history can be migrated. **Example #1** is a display name change, not a new training block.
+1. Open your existing PEAK website. Use Profile > Back up profiles to download a JSON backup. Store it somewhere private: it contains training history and may include other local profiles.
+2. Keep the current GitHub Pages URL/repository. This is a replacement of the application files, not a new site.
+3. Extract `PEAK_Training_v3_GitHub_Pages.zip` on your computer.
 
-## What this version supports
+## Upload
 
-- Create, rename, switch, and delete local profiles.
-- Each profile independently enrols in programmes and saves progress, lift maxima, and settings.
-- Choose **Example #1** from the catalogue or import other programmes via the Excel template.
-- Export/restore one JSON backup containing all local profiles, enrolments, and logs.
+1. Open your existing GitHub repository.
+2. Delete old website files that have been renamed or removed only if needed. The folder structure in this ZIP is repository-root-ready.
+3. Click **Add file > Upload files** and drag the files from inside the extracted ZIP (including `index.html`, `app.js`, `core.js`, CSS, JSON, icons, `cloud-config.js`, `cloud-auth.js`). Include the `supabase` directory if you'd like the setup SQL kept in GitHub for reference.
+4. Confirm **Replace** if GitHub asks and click **Commit changes**.
+5. In repository **Settings > Pages** keep Source `Deploy from a branch`, Branch `main`, Folder `/(root)`.
+6. Open your usual Pages URL. After GitHub finishes publishing, reload the site; for the installable app's older service worker, a second refresh or fully closing and reopening the app may be needed.
+7. Check Profile > Example #1 > first training session. Readiness should show 3/5 and the all-movement RPE checkbox should be unchecked.
 
-**Important:** GitHub Pages does not itself provide user accounts or a shared database. These profiles are **device/browser-local, not password-protected online accounts**. They do not sync between phones or computers. A proper email/password account and secure cross-device sync would require a service such as Supabase or Firebase and further implementation.
+## Optional online passwords, registration and admin dashboard
+
+**Not automatically enabled.** Your ZIP is safe to deploy with local profiles while you are deciding. `cloud-config.js` has blank configuration values by default.
+
+To activate secure online accounts and Bloay's admin dashboard, follow **SECURE_ACCOUNTS_SETUP.md**. You must have a Supabase project, run the security SQL, privately register and verify the admin account, and fill in your Supabase project URL + **publishable** key in `cloud-config.js` before pushing it live. Don't put a password or service_role key in the GitHub repo.
+
+**Important migration note:** Enabling online accounts switches the app from local browser profiles to the cloud. Before doing so, export a backup of your local training. After signing into the new online account, restore the backup. A cloud account imports only the selected athlete profile from a multi-profile local backup. It does not automatically sync previously anonymous browsers.
+
+See README.md for training features and data behaviour.
