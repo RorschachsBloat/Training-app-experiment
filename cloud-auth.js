@@ -123,6 +123,52 @@ async function setProgrammeArchived(id,archived){
  if(!data||data.is_archived!==Boolean(archived))throw Error('Archive status was not saved');
  return data;
 }
-root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,publishedPrograms,publishProgram,setProgrammeArchived,sendPasswordReset,finishPasswordReset,changeEmail,
+// Administrator-only READ-ONLY export. RLS still decides what an authenticated
+// administrator may read; there is no service_role or privileged key in the app.
+// Each page is bounded to avoid PostgREST response limits. Exports fail closed
+// if a page fails or the visible row count changes during the read.
+async function pagedAdmin(table,columns,sortKeys,filter){
+ assertAdmin();const rows=[],chunk=400;
+ let total;
+ {let q=client.from(table).select(sortKeys[0],{count:'exact',head:true});if(filter)q=filter(q);
+  const {count,error}=await q;if(error)throw Error('Could not count '+table+': '+error.message);
+  if(count===null)throw Error('No row count returned for '+table);total=count;}
+ for(let offset=0;offset<total;offset+=chunk){
+  let q=client.from(table).select(columns);
+  if(filter)q=filter(q);
+  for(const key of sortKeys)q=q.order(key,{ascending:true});
+  const {data,error}=await q.range(offset,Math.min(total-1,offset+chunk-1));
+  if(error)throw Error('Could not export '+table+': '+error.message);
+  if(!data||data.length!==Math.min(chunk,total-offset))throw Error('Incomplete export of '+table+'; nothing downloaded');
+  rows.push(...data);
+ }
+ // A changed count indicates concurrent signup/writes/deletes; retry later.
+ {let q=client.from(table).select(sortKeys[0],{count:'exact',head:true});if(filter)q=filter(q);
+  const {count,error}=await q;
+  if(error||count!==total)throw Error('Data changed while exporting '+table+'; please retry.');}
+ return rows;
+}
+async function adminExportAll(){
+ assertAdmin();
+ const accounts=await pagedAdmin('peak_accounts','id,username,email,role,created_at',['id']);
+ const documents=await pagedAdmin('peak_documents','owner_id,kind,doc_id,content,updated_at',['owner_id','kind','doc_id']);
+ const releases=await pagedAdmin('peak_programme_releases','program_id,version,content,published_by,published_at,is_archived,archived_at',['program_id']);
+ const ids=new Set(accounts.map(a=>a.id));
+ if(documents.some(d=>!ids.has(d.owner_id)))throw Error('Unmatched athlete document detected; export cancelled');
+ return {format:'PEAK_ADMIN_SNAPSHOT',version:1,exportedAt:new Date().toISOString(),
+  note:'Read-only application-data archive. Does not contain passwords, Supabase Auth identities, or a complete database backup. Do not import through athlete Restore.',
+  counts:{accounts:accounts.length,documents:documents.length,releases:releases.length},accounts,documents,releases};
+}
+async function adminExportAthlete(ownerId){
+ assertAdmin();
+ if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(ownerId))throw Error('Invalid athlete ID');
+ const {data:account,error}=await client.from('peak_accounts').select('id,username,email,role,created_at').eq('id',ownerId).single();
+ if(error)throw Error('Could not load athlete: '+error.message);
+ const documents=await pagedAdmin('peak_documents','owner_id,kind,doc_id,content,updated_at',['owner_id','kind','doc_id'],q=>q.eq('owner_id',ownerId));
+ return {format:'PEAK_ADMIN_ATHLETE_SNAPSHOT',version:1,exportedAt:new Date().toISOString(),
+  note:'Sensitive single-athlete archive. Not a direct athlete-restore file. Does not include authentication credentials.',
+  counts:{accounts:1,documents:documents.length},accounts:[account],documents};
+}
+root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,adminExportAll,adminExportAthlete,publishedPrograms,publishProgram,setProgrammeArchived,sendPasswordReset,finishPasswordReset,changeEmail,
  get user(){return identity},get account(){return account},get recoveryPending(){return recoveryPending}};
 })(window);
