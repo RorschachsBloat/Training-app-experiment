@@ -99,3 +99,11 @@
 .auth-panel .auth-switch+.auth-switch{margin-top:9px}
 
 .rpe-not-used {align-self:center;justify-self:center;color:var(--muted,#8b95a2);font-size:.76rem;font-weight:700;letter-spacing:.08em}
+/* v5.2 — reversible catalogue management */
+.release-manager-row{display:flex;gap:18px;justify-content:space-between;align-items:flex-start;margin:12px 0}
+.release-manager-main{min-width:0;flex:1}
+.release-manager-main h3{margin:7px 0 4px;overflow-wrap:anywhere}
+.release-manager-main .micro{max-width:560px}
+.release-manager-actions{display:flex;flex-direction:column;gap:9px;flex:0 0 auto;min-width:175px}
+.release-manager-actions button{width:100%}
+@media(max-width:600px){.release-manager-row{flex-direction:column}.release-manager-actions{width:100%;flex-direction:row;flex-wrap:wrap}.release-manager-actions button{flex:1 1 160px}}

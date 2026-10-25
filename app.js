@@ -1,6 +1,7 @@
 (async function(){'use strict';
 const $=id=>document.getElementById(id),C=window.PeakCore,Imp=window.PeakImport,Cloud=window.PeakCloud,cloudMode=Boolean(Cloud?.enabled);
 let authMode='login',authNotice='',adminCache=null,adminSelected=null,adminDocs=null,adminProgramme=null,adminLoading=false,adminError='',programmeSyncIssue='';
+let archivedProgrammeIds=new Set(),adminReleases=null,adminCatalogueError='',adminCatalogueLoading=false,adminExpectedUpdateId=null;
 const DB='peak-training-data', DBVER=2;let db,programs=[],profiles=[],profile=null,enrolled={},states={},activeId='',P=null,S=null,view='profiles',week=1,sessionId='',toastTimer=null,pendingImport=null,installPrompt=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=n=>Number(n||0).toLocaleString('en-GB',{maximumFractionDigits:1}),f=n=>Number(n||0).toFixed(1).replace(/\.0$/,''),slug=s=>String(s||'').replace(/[^a-z0-9]+/ig,'_').slice(0,60);
@@ -17,6 +18,9 @@ function alertUser(t){$('toast').textContent=t;$('toast').classList.add('visible
 const stateKey=(profileId,programmeId)=>JSON.stringify([profileId,programmeId]);
 const profileInitial=name=>({id:(cloudMode&&Cloud.user?.id)||((crypto.randomUUID?crypto.randomUUID():('local-'+Date.now()+'-'+Math.random().toString(36).slice(2)))),name,createdAt:new Date().toISOString(),activeProgramId:''});
 const isEnrolled=id=>!!enrolled[id];
+// Archiving changes public discovery, not ownership or training data.
+const showInCatalogue=id=>!cloudMode||isEnrolled(id)||!archivedProgrammeIds.has(id);
+function updateReleaseStatuses(releases){archivedProgrammeIds=new Set(releases.filter(r=>r.is_archived===true).map(r=>r.program_id));}
 function activate(id){
  if(!profile||!isEnrolled(id))return false;
  const p=programs.find(x=>x.id===id);if(!p)return false;
@@ -59,7 +63,7 @@ async function unenrol(id){
  if(activeId===id){P=null;S=null;activeId='';profile.activeProgramId='';const next=Object.keys(enrolled)[0];if(next)activate(next);else await put('profiles',profile)}
  switchTo('profile');alertUser('Programme removed from profile');
 }
-function switchTo(v){view=(!profile&&v!=='profiles')?'profiles':(!P&&!['profile','profiles','library'].includes(v))?'library':v;render();window.scrollTo({top:0,behavior:'instant'})}
+function switchTo(v){view=(!profile&&v!=='profiles')?'profiles':(!P&&!['profile','profiles','library','admin','adminprogrammes'].includes(v))?'library':v;render();window.scrollTo({top:0,behavior:'instant'})}
 function activeWeek(){return P.weeks.find(w=>w.week===week)}
 function session(){return P.sessions.find(x=>x.id===sessionId)||P.sessions[0]}
 function logsFor(s){return C.logCount(S,s)}
@@ -96,7 +100,23 @@ function adminView(){
    details=`<div class="panel admin-details"><h3>${esc(person.username)} — training history</h3><p class="muted">${esc(person.email)} · Joined ${esc(new Date(person.created_at).toLocaleDateString('en-GB'))}</p>${ids.length?`<div class="admin-programmes">${menu}</div>${adminTrainingDetails(programme,current)}`:'<p>This athlete has no saved programmes or training logs yet.</p>'}<p class="micro">Read-only. These are the athlete’s recorded values, not editable coaching targets.</p></div>`;
   }
  }
- return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>Athlete training logs<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'}. Select an athlete, then a programme, to inspect their logged training. Other athletes cannot view these records.</p></div><section class="panel"><h3>Publish a programme update</h3><p class="muted">Upload a PEAK Excel or JSON programme file. Keep the Programme ID and increase Version to publish revised future sessions to every athlete. Already-started sessions keep their original weights, exercise selection and logs.</p><button class="btn btn-primary" data-action="adminupload">↑ Upload programme update</button><p class="micro">Athletes receive updates when they next sign in or press Sync published programmes. Only Supabase administrators can publish.</p></section><div class="admin-list">${rows||'<p>No registered accounts found.</p>'}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
+ return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>Athlete training logs<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'}. Select an athlete, then a programme, to inspect their logged training. Other athletes cannot view these records.</p></div><section class="panel"><h3>Publish a programme update</h3><p class="muted">Upload a PEAK Excel or JSON programme file. Keep the Programme ID and increase Version to publish revised future sessions to every athlete. Already-started sessions keep their original weights, exercise selection and logs.</p><button class="btn btn-primary" data-action="adminupload">↑ Upload programme update</button><button class="btn btn-outline" data-action="adminprogrammes">Manage published programmes →</button><p class="micro">Athletes receive updates when they next sign in or press Sync published programmes. Only Supabase administrators can publish.</p></section><div class="admin-list">${rows||'<p>No registered accounts found.</p>'}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
+}
+function adminProgrammeManager(){
+ if(!cloudMode||Cloud.account?.role!=='admin')return '<div class="empty">Administrator access required.</div>';
+ const releases=adminReleases||[];
+ const active=releases.filter(r=>!r.is_archived).length,archived=releases.length-active;
+ const items=[...releases].sort((a,b)=>Boolean(a.is_archived)-Boolean(b.is_archived)||String(a.content?.title||a.program_id).localeCompare(String(b.content?.title||b.program_id)));
+ const builtinUnpublished=programs.some(p=>p.id==='peak-105-classic')&&!releases.some(r=>r.program_id==='peak-105-classic');
+ const list=items.map(r=>{const locked=Boolean(r.is_archived);return `<article class="panel release-manager-row"><div class="release-manager-main"><span class="eyebrow">${locked?'ARCHIVED':'PUBLISHED'} · VERSION ${esc(r.version)}</span><h3>${esc(r.content?.title||r.program_id)}</h3><p class="muted">Programme ID: <code>${esc(r.program_id)}</code></p><p class="micro">${locked?'Hidden from the general Library. Already-enrolled athletes can still train and view their records.':'Available to athletes on their next programme sync.'}</p></div><div class="release-manager-actions"><button class="btn ${locked?'btn-primary':'btn-outline'}" data-admin-archive="${esc(r.program_id)}" data-archive-value="${locked?'restore':'archive'}">${locked?'↶ Restore to Library':'Archive programme'}</button><button class="btn btn-outline" data-admin-update="${esc(r.program_id)}">↑ Upload update</button></div></article>`}).join('');
+ return `<button class="back" data-action="admin">← Athlete dashboard</button><div class="pagehead"><span class="eyebrow">ADMINISTRATOR / CATALOGUE</span><h1>Manage programmes<span class="accent">.</span></h1><p>Archive to remove a programme from the public Library. People who already added it keep access to their training and logs. Restore whenever you want to make it available again.</p></div><div class="catalogue-summary"><span>${active} published · ${archived} archived</span><button class="textlink" data-action="adminrefreshprogrammes">↻ Refresh list</button></div>${adminCatalogueError?`<div class="notice danger" role="alert">${esc(adminCatalogueError)}</div>`:''}<section class="panel"><h3>Publish a new programme</h3><p class="muted">Import a new Excel / JSON programme, or upload a new Version for an existing ID. Updating a programme does not automatically unarchive it.</p><button class="btn btn-primary" data-action="adminupload">＋ Publish or update</button></section>${adminCatalogueLoading?'<div class="panel">Loading published programmes…</div>':list||'<div class="empty">No programmes have been centrally published yet. Import and publish one to begin managing it.</div>'}<div class="callout"><strong>About Example #1</strong><p>Example #1 is bundled with PEAK. Register it as a central programme before archiving it for new athletes. People already enrolled will keep the programme and their records.</p>${builtinUnpublished?'<button class="btn btn-outline" data-action="adminregisterbuiltin">Register Example #1 for management</button>':'<p class="micro">Example #1 can be archived or restored using the controls above.</p>'}</div><p class="micro">Archiving is reversible. There is deliberately no permanent Delete button because users may have existing training logs.</p>`;
+}
+async function refreshAdminProgrammes(){
+ if(!cloudMode||Cloud.account?.role!=='admin')return;
+ adminCatalogueLoading=true;adminCatalogueError='';render();
+ try{adminReleases=await Cloud.publishedPrograms();updateReleaseStatuses(adminReleases)}
+ catch(e){adminCatalogueError=e.message}
+ finally{adminCatalogueLoading=false;render()}
 }
 function adminTrainingDetails(programme,state){
  if(!state)return '<p class="empty">No saved training state for this programme.</p>';
@@ -131,8 +151,8 @@ function chooser(){if(cloudMode)return authView();return `<div class="profile-we
  <div class="panel"><h3>Create a profile</h3><form id="createProfileForm" class="profile-form"><label for="profileName">Profile name</label><input required minlength="2" maxlength="40" id="profileName" name="name" placeholder="e.g. Alex" autocomplete="nickname"><button class="btn btn-primary" type="submit">Create profile →</button></form></div>
  ${profiles.length?`<section class="space"><div class="sectiontitle"><h2>Choose an existing profile</h2></div><div class="profile-grid">${profiles.map(person=>`<button class="profile-person" data-choose-profile="${esc(person.id)}"><span class="profile-initial">${esc(person.name.slice(0,1).toUpperCase())}</span><span><strong>${esc(person.name)}</strong><small>Continue training →</small></span></button>`).join('')}</div></section>`:''}
  <div class="importactions"><button class="btn btn-outline" data-action="restore">↑ Restore existing PEAK backup</button></div><p class="micro">Profiles in this version are local to this browser, not password-protected accounts. To access your training on another device, make a JSON backup and restore it there.</p>`}
-function profileView(){if(!profile)return chooser();const mine=programs.filter(p=>isEnrolled(p.id)),available=programs.filter(p=>!isEnrolled(p.id));return `<div class="profile-hero"><div class="profile-initial profile-initial-large">${esc(profile.name.slice(0,1).toUpperCase())}</div><div><span class="eyebrow">YOUR ATHLETE PROFILE</span><h1>${esc(profile.name)}<span class="accent">.</span></h1><p>Joined ${esc(new Date(profile.createdAt).toLocaleDateString('en-GB',{month:'short',year:'numeric'}))}</p></div></div>
- <div class="profile-actions"><button class="btn btn-outline" data-action="renameprofile">Edit name</button>${cloudMode?`<button class="btn btn-outline" data-action="signout">Sign out</button>`:`<button class="btn btn-outline" data-action="switchprofile">Switch profile</button>`}</div>${cloudMode&&Cloud.account?.role==='admin'?`<button class="btn btn-primary admin-launch" data-action="admin">View all athlete accounts →</button>`:``}
+function profileView(){if(!profile)return chooser();const mine=programs.filter(p=>isEnrolled(p.id)),available=programs.filter(p=>!isEnrolled(p.id)&&showInCatalogue(p.id));return `<div class="profile-hero"><div class="profile-initial profile-initial-large">${esc(profile.name.slice(0,1).toUpperCase())}</div><div><span class="eyebrow">YOUR ATHLETE PROFILE</span><h1>${esc(profile.name)}<span class="accent">.</span></h1><p>Joined ${esc(new Date(profile.createdAt).toLocaleDateString('en-GB',{month:'short',year:'numeric'}))}</p></div></div>
+ <div class="profile-actions"><button class="btn btn-outline" data-action="renameprofile">Edit name</button>${cloudMode?`<button class="btn btn-outline" data-action="signout">Sign out</button>`:`<button class="btn btn-outline" data-action="switchprofile">Switch profile</button>`}</div>${cloudMode&&Cloud.account?.role==='admin'?`<button class="btn btn-primary admin-launch" data-action="admin">View all athlete accounts →</button><button class="btn btn-outline admin-launch" data-action="adminprogrammes">Manage published programmes →</button>`:``}
  ${cloudMode?`<div class="account-email"><span>Sign-in email</span><strong>${esc(Cloud.user?.email||Cloud.account?.email||'Not available')}</strong><div class="pair"><button class="btn btn-outline" data-action="refreshaccount">↻ Refresh email</button><button class="btn btn-outline" data-action="changeemail">Change email</button></div></div>`:''}
  <div class="sectiontitle profile-section"><div><span class="eyebrow">SAVED TO YOUR PROFILE</span><h2>My programmes</h2></div><span class="pill">${mine.length} added</span></div>
  ${mine.length?`<div class="programme-list">${mine.map(cardProgramme).join('')}</div>`:`<div class="empty-profile"><span>▦</span><h3>No programmes yet</h3><p>Pick a programme below to add it to your profile and start tracking.</p></div>`}
@@ -146,7 +166,7 @@ function home(){const w=activeWeek(),sessions=P.sessions.filter(s=>s.week===week
  <div class="week-summary"><div><strong>${esc(w?.phase||'Training')}</strong><span>${done} of ${all} sets logged this week</span></div><b>${all?Math.round(100*done/all):0}%</b></div><div class="progressbar"><span style="width:${all?100*done/all:0}%"></span></div>
  <div class="sectiontitle subheading"><h2>Training sessions</h2><span class="pill">${sessions.length} days</span></div>
  ${sessions.map(s=>{let n=logsFor(s),tot=countSets(s);return `<button class="daycard" data-session="${esc(s.id)}"><span class="daypill">D${String(s.day).padStart(2,'0')}</span><span class="dayinfo"><strong>${esc(s.title)}</strong><small>${s.rest?esc(s.rest):`${n} / ${tot} sets completed · ${esc(s.phase)}`}</small><span class="tinybar"><i style="width:${tot?n/tot*100:0}%"></i></span></span><span class="arrow">↗</span></button>`}).join('')||'<div class="empty">No sessions scheduled for this week.</div>'}</section>`}
-function library(){const count=Object.keys(enrolled).length;return `<div class="pagehead"><span class="eyebrow">${profile?esc(profile.name.toUpperCase())+' / ':''}PROGRAMME LIBRARY</span><h1>Choose your programme<span class="accent">.</span></h1><p>Add a programme to your profile, switch between saved programmes, or import another training block. Each profile has its own progress.</p></div><div class="catalogue-summary"><span>${count} saved to your profile</span><button class="textlink" data-action="profile">View profile ↗</button></div>${programmeSyncIssue?`<div class="notice danger" role="alert"><strong>Programme sync needs attention</strong><p>${esc(programmeSyncIssue)}</p><p>Check the version and format of the published programme, or confirm the Supabase publishing table exists.</p></div>`:''}<div class="programme-list">${programs.map(cardProgramme).join('')}</div><div class="importactions library-import"><button class="btn btn-outline" data-action="import">＋ Import programme</button>${cloudMode?'<button class="btn btn-outline" data-action="syncprogrammes">↻ Sync published programmes</button>':''}<a class="btn btn-outline" href="PEAK_Programme_Template.xlsx" download>↓ Excel template</a></div><div class="callout"><strong>Adding and updating programmes</strong><p>Import a completed PEAK Excel template or compatible JSON file. Supports STANDARD, AMRAP and REP_MAX barbell sets. Each programme has its own maximums. Bloay can publish versioned updates to all cloud athletes; previously started sessions and all training logs are protected.</p></div>`}
+function library(){const count=Object.keys(enrolled).length;return `<div class="pagehead"><span class="eyebrow">${profile?esc(profile.name.toUpperCase())+' / ':''}PROGRAMME LIBRARY</span><h1>Choose your programme<span class="accent">.</span></h1><p>Add a programme to your profile, switch between saved programmes, or import another training block. Each profile has its own progress.</p></div><div class="catalogue-summary"><span>${count} saved to your profile</span><button class="textlink" data-action="profile">View profile ↗</button></div>${programmeSyncIssue?`<div class="notice danger" role="alert"><strong>Programme sync needs attention</strong><p>${esc(programmeSyncIssue)}</p><p>Check the version and format of the published programme, or confirm the Supabase publishing table exists.</p></div>`:''}<div class="programme-list">${programs.filter(p=>showInCatalogue(p.id)).map(cardProgramme).join('')||'<div class="empty">No programmes available. Ask your coach to publish a programme or import your own.</div>'}</div><div class="importactions library-import"><button class="btn btn-outline" data-action="import">＋ Import programme</button>${cloudMode?'<button class="btn btn-outline" data-action="syncprogrammes">↻ Sync published programmes</button>':''}<a class="btn btn-outline" href="PEAK_Programme_Template.xlsx" download>↓ Excel template</a></div><div class="callout"><strong>Adding and updating programmes</strong><p>Import a completed PEAK Excel template or compatible JSON file. Supports STANDARD, AMRAP and REP_MAX barbell sets. Each programme has its own maximums. Bloay can publish versioned updates to all cloud athletes; previously started sessions and all training logs are protected.</p></div>`}
 function stageTag(s){return s.setType==='AMRAP'?'AMRAP':s.setType==='REP_MAX'?'Rep max':s.stage==='RAMP'?'Ramp':s.stage==='WORK'?'Working':'Accessory'}
 function renderExercise(group){
  const x=group[0],classification=x.kind==='ACC'?'accessory':x.family==='SQ'?'squat':x.family==='BP'?'bench':'deadlift';
@@ -185,11 +205,11 @@ function settings(){const c=S.config;function inp(label,group,key,value,detail,s
  <div class="panel"><h3>Individual movement maximums</h3><p class="muted">Optional absolute max for each variation in <strong>${esc(P.title)}</strong>. Enter 0 to inherit the competition 1RM × movement ratio. Other programmes are unaffected.</p>${movements.map(m=>{const v=c.variation?.[m.code]||{};return inp(m.name+' ('+m.code+')','movementMaxes',m.code,c.movementMaxes?.[m.code]||0,`Estimated: ${f(C.exerciseMax({...m,code:m.code},{...c,movementMaxes:{...c.movementMaxes,[m.code]:0}}))} kg · ${f((v.ratio||1)*100)}% of ${m.family}`,'2.5')}).join('')||'<p class="muted">No variations in this programme.</p>'}</div>
  <div class="panel"><h3>RPE reduction scope</h3><label class="scope-checkbox"><input type="checkbox" data-rpe-all ${S.applyRpeToAll?'checked':''}><span><strong>Apply reductions across all movements</strong><small>Unchecked by default. Otherwise adjustments only affect the same movement.</small></span></label></div>
  <details class="panel"><summary>Advanced RPE safeguard settings</summary><div class="configlist">${Object.entries(c.settings||{}).map(([k,v])=>inp(k,'settings',k,v,'','0.025')).join('')}</div></details>
- <div class="panel"><h3>App installation & updates</h3><p class="muted">The web app receives interface improvements when the website is updated. Training programme changes can be imported as a new Excel or JSON file.</p><button class="btn btn-outline" data-action="checkupdate">Check for web app update</button><p class="micro">Current app: 5.1 · Programme: v${esc(P.version||1)}</p>${S.history?.length?`<h4>Programme update history</h4><ul class="history">${S.history.slice().reverse().map(h=>`<li>${esc(h.date?.slice(0,10))} · v${esc(h.from)} → v${esc(h.to)} · ${h.protected} started sessions preserved</li>`).join('')}</ul>`:''}</div>`}
-function render(){if(!profile&&view!=='profiles')view='profiles';else if(profile&&!P&&!['profiles','profile','library','admin'].includes(view))view='profile';header();updatedStatus();$('main').innerHTML=view==='profiles'?chooser():view==='admin'?adminView():view==='profile'?profileView():view==='library'?library():view==='progress'?progress():view==='settings'?settings():view==='session'?sessionView():home()}
+ <div class="panel"><h3>App installation & updates</h3><p class="muted">The web app receives interface improvements when the website is updated. Training programme changes can be imported as a new Excel or JSON file.</p><button class="btn btn-outline" data-action="checkupdate">Check for web app update</button><p class="micro">Current app: 5.2 · Programme: v${esc(P.version||1)}</p>${S.history?.length?`<h4>Programme update history</h4><ul class="history">${S.history.slice().reverse().map(h=>`<li>${esc(h.date?.slice(0,10))} · v${esc(h.from)} → v${esc(h.to)} · ${h.protected} started sessions preserved</li>`).join('')}</ul>`:''}</div>`}
+function render(){if(!profile&&view!=='profiles')view='profiles';else if(profile&&!P&&!['profiles','profile','library','admin','adminprogrammes'].includes(view))view='profile';header();updatedStatus();$('main').innerHTML=view==='profiles'?chooser():view==='admin'?adminView():view==='adminprogrammes'?adminProgrammeManager():view==='profile'?profileView():view==='library'?library():view==='progress'?progress():view==='settings'?settings():view==='session'?sessionView():home()}
 function download(filename,text,type){const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(url)},2000)}
 async function backup(){const ps=await all('programmes'),people=await all('profiles'),enrolments=await all('enrolments'),saved=await all('profileStates');download('PEAK_Profiles_Backup_'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({format:'PEAK_TRAINING_BACKUP',version:2,exported:new Date().toISOString(),activeProfileId:profile?.id||'',programmes:ps,profiles:people,enrolments,profileStates:saved},null,2),'application/json')}
-function closedModal(){pendingImport=null;$('modal').classList.add('hidden');$('modalBody').innerHTML=''}
+function closedModal(){pendingImport=null;adminExpectedUpdateId=null;$('modal').classList.add('hidden');$('modalBody').innerHTML=''}
 function showModal(html){$('modalBody').innerHTML=html;$('modal').classList.remove('hidden')}
 function hasEntry(log){return log&&(log.done||C.hasNum(log.weight)||C.hasNum(log.rpe)||C.hasNum(log.reps)||log.status==='skipped')}
 function mergeUpdatedProgramme(oldP,newP,oldState){const prev=new Map(oldP.sessions.map(s=>[s.id,s]));let protectedCount=0;const updated=structuredClone(newP);
@@ -203,10 +223,10 @@ function mergeUpdatedProgramme(oldP,newP,oldState){const prev=new Map(oldP.sessi
  updated.weeks.sort((a,b)=>a.week-b.week);
  return {updated,protectedCount};
 }
-async function importProgramme(file){try{const p=await Imp.parseFile(file);const current=programs.find(x=>x.id===p.id),oldState=states[p.id];const hasOld=!!current;
+async function importProgramme(file){try{const p=await Imp.parseFile(file);if(adminExpectedUpdateId){const released=adminReleases?.find(r=>r.program_id===adminExpectedUpdateId);if(p.id!==adminExpectedUpdateId)throw Error(`This update must keep Programme ID ${adminExpectedUpdateId}; uploaded file uses ${p.id}.`);if(released&&Number(p.version)<=Number(released.version))throw Error(`Version must be higher than published v${released.version}.`)}const current=programs.find(x=>x.id===p.id),oldState=states[p.id];const hasOld=!!current;
  pendingImport=p;const count=p.sessions.reduce((n,s)=>n+countSets(s),0);
  showModal(`<div class="eyebrow">${hasOld?'PROGRAMME UPDATE':'NEW PROGRAMME'}</div><h2>${esc(p.title)}</h2><p class="muted">${p.weeks.length} weeks · ${p.sessions.length} sessions · ${count} sets · Version ${esc(p.version)}</p><p>${hasOld?`This matches the existing Programme ID <b>${esc(p.id)}</b> (installed version ${esc(current.version||1)}). Started sessions and recorded logs will be preserved. Unstarted sessions will use the imported prescriptions.`:`Install <b>${esc(p.id)}</b> as a new programme? It will be added to your library.`}</p>${hasOld&&Number(p.version)<=Number(current.version)?'<div class="notice danger">Use a higher Version number for updates. Older versions cannot be published.</div>':''}<div class="btnrow"><button class="btn btn-outline" data-action="cancelmodal">Cancel</button><button class="btn btn-outline" data-action="installprogramme">${hasOld?'Install for me':'Add to my library'}</button>${cloudMode&&Cloud.account?.role==='admin'?`<button class="btn btn-primary" data-action="publishprogramme">Publish to all athletes</button>`:''}</div>`);
- }catch(e){console.error(e);showModal(`<div class="eyebrow">IMPORT NOT COMPLETED</div><h2>Could not read programme</h2><p class="notice danger" role="alert">${esc(e.message)}</p><p class="muted">Check that you uploaded a completed PEAK Excel template with Programme Info, Exercises and Sessions sheets, or a compatible programme JSON file. No existing training records were changed.</p><div class="btnrow"><button class="btn btn-primary" data-action="cancelmodal">Close</button></div>`)}}
+ }catch(e){adminExpectedUpdateId=null;console.error(e);showModal(`<div class="eyebrow">IMPORT NOT COMPLETED</div><h2>Could not read programme</h2><p class="notice danger" role="alert">${esc(e.message)}</p><p class="muted">Check that you uploaded a completed PEAK Excel template with Programme Info, Exercises and Sessions sheets, or a compatible programme JSON file. No existing training records were changed.</p><div class="btnrow"><button class="btn btn-primary" data-action="cancelmodal">Close</button></div>`)}}
 async function applyProgramme(p,options={}){
  Imp.validate(p);
  const old=programs.find(x=>x.id===p.id);
@@ -240,12 +260,16 @@ async function syncPublishedPrograms(quiet=false){
  if(!cloudMode||!Cloud.user)return {updated:0,available:0};
  let releases=[];
  try{releases=await Cloud.publishedPrograms()}catch(error){programmeSyncIssue=error.message;throw error}
+ updateReleaseStatuses(releases);if(Cloud.account?.role==='admin')adminReleases=releases;
  let updated=0,available=0;const errors=[];
  for(const release of releases){
   try{
    const p=Imp.validate(release.content);
    if(p.id!==release.program_id||Number(p.version)!==Number(release.version))throw Error('Programme identity/version mismatch');
    const previous=programs.find(x=>x.id===p.id);
+   // An archived programme is not distributed to someone who never enrolled.
+   // Never delete an enrolled or logged copy: athletes retain their history.
+   if(release.is_archived&&!isEnrolled(p.id))continue;
    if(!previous){await applyProgramme(p);available++}
    else if(Number(p.version)>Number(previous.version||1)){await applyProgramme(p,{auto:true});updated++}
   }catch(error){console.warn('Skipped invalid published programme',release.program_id,error);errors.push(`${release.program_id}: ${error.message}`)}
@@ -272,10 +296,10 @@ async function publishProgramme(){
  // should be visible to the publisher immediately. Apply it to the admin's own
  // catalogue without enrolling; signed-in athletes pick it up via normal sync.
  let localError='';
- try{await applyProgramme(p,{auto:true});programmeSyncIssue=''}
+ try{await syncPublishedPrograms(true);programmeSyncIssue=''}
  catch(error){localError=error.message;programmeSyncIssue='Published successfully, but your local Library could not refresh: '+localError;console.error(error)}
- closedModal();switchTo('library');
- alertUser(localError?'Programme published; your Library needs a sync':`${p.title} v${p.version} published — select Add to my profile if you want to train it`);
+ closedModal();const stillArchived=archivedProgrammeIds.has(p.id);switchTo(stillArchived?'adminprogrammes':'library');
+ alertUser(localError?'Programme published; refresh the catalogue':stillArchived?'Update published, but still archived — Restore to make it visible':`${p.title} v${p.version} published — select Add to my profile if you want to train it`);
 }
 async function restoreBackup(file){try{
  const obj=JSON.parse(await file.text());if(obj.format!=='PEAK_TRAINING_BACKUP'||!Array.isArray(obj.programmes))throw Error('Not a PEAK Training backup');
@@ -366,6 +390,20 @@ async function initData(preferredProfile){
 document.addEventListener('click',async e=>{
  const selectedAdmin=e.target.closest('[data-admin-user]');if(selectedAdmin&&cloudMode&&Cloud.account?.role==='admin'){adminSelected=selectedAdmin.dataset.adminUser;adminDocs=null;adminProgramme=null;adminLoading=true;adminError='';render();try{adminDocs=await Cloud.adminAthleteDocuments(adminSelected)}catch(err){adminError=err.message}finally{adminLoading=false;render()}return}
  const selectedProgramme=e.target.closest('[data-admin-program]');if(selectedProgramme&&cloudMode&&Cloud.account?.role==='admin'){adminProgramme=selectedProgramme.dataset.adminProgram;render();return}
+ const changeArchive=e.target.closest('[data-admin-archive]');
+ if(changeArchive&&cloudMode&&Cloud.account?.role==='admin'){
+  const id=changeArchive.dataset.adminArchive,archive=changeArchive.dataset.archiveValue==='archive';
+  const release=adminReleases?.find(r=>r.program_id===id);if(!release)return;
+  if(!confirm(`${archive?'Archive':'Restore'} ${release.content?.title||id}? ${archive?'This hides it from new athletes, but preserves enrolled programmes, logs and training history.':'This makes it available to athletes again.'}`))return;
+  changeArchive.disabled=true;
+  try{await Cloud.setProgrammeArchived(id,archive);await syncPublishedPrograms(true);adminCatalogueError='';render();alertUser(archive?'Programme archived. Existing athlete logs retained.':'Programme restored to public Library.')}
+  catch(err){adminCatalogueError=err.message;render();alertUser('Could not change archive status — see details above')}
+  return;
+ }
+ const updatePublished=e.target.closest('[data-admin-update]');
+ if(updatePublished&&cloudMode&&Cloud.account?.role==='admin'){
+  adminExpectedUpdateId=updatePublished.dataset.adminUpdate;alertUser('Choose a file with the same Programme ID and a higher Version');$('importFile').click();return;
+ }
  const chosen=e.target.closest('[data-choose-profile]');if(chosen){const person=profiles.find(p=>p.id===chosen.dataset.chooseProfile);if(person){await loadProfile(person);render()}return}
  const ready=e.target.closest('[data-readiness]');if(ready&&S){const n=Number(ready.dataset.readiness);S.readiness=S.readiness||{};S.readiness[sessionId]=n;await saveState();render();alertUser('Session readiness set to '+n+'/5');return}
  const nav=e.target.closest('[data-nav]');if(nav){switchTo(nav.dataset.nav);return}
@@ -378,8 +416,18 @@ document.addEventListener('click',async e=>{
  if(cmd==='authswitch'){authMode=authMode==='signup'?'login':'signup';authNotice='';render();return}
  if(cmd==='authforgot'){authMode='forgot';authNotice='';render();return}
  if(cmd==='authlogin'){authMode='login';authNotice='';render();return}
- if(cmd==='signout'&&cloudMode){await Cloud.signout();profile=null;profiles=[];programs=[];enrolled={};states={};activeId='';P=null;S=null;adminCache=null;adminDocs=null;adminSelected=null;authMode='login';authNotice='Signed out.';view='profiles';render();return}
+ if(cmd==='signout'&&cloudMode){await Cloud.signout();profile=null;profiles=[];programs=[];enrolled={};states={};activeId='';P=null;S=null;adminCache=null;adminDocs=null;adminSelected=null;adminReleases=null;archivedProgrammeIds=new Set();authMode='login';authNotice='Signed out.';view='profiles';render();return}
  if(cmd==='admin'&&cloudMode&&Cloud.account?.role==='admin'){view='admin';adminSelected=null;adminDocs=null;adminError='';try{adminCache=await Cloud.adminOverview()}catch(err){alertUser(err.message);return}render();return}
+ if(cmd==='adminprogrammes'&&cloudMode&&Cloud.account?.role==='admin'){view='adminprogrammes';await refreshAdminProgrammes();return}
+ if(cmd==='adminregisterbuiltin'&&cloudMode&&Cloud.account?.role==='admin'){
+  const builtin=programs.find(p=>p.id==='peak-105-classic');
+  if(!builtin)return;
+  if(!confirm('Register the built-in Example #1 with the same Programme ID so it can be archived or restored? No athlete records will be changed.'))return;
+  try{await Cloud.publishProgram(builtin);await refreshAdminProgrammes();alertUser('Example #1 registered. Use Archive programme to hide it from the public Library.')}
+  catch(err){adminCatalogueError=err.message;render();alertUser('Could not register Example #1')}
+  return;
+ }
+ if(cmd==='adminrefreshprogrammes'&&cloudMode&&Cloud.account?.role==='admin'){await refreshAdminProgrammes();return}
  if(cmd==='adminrefresh'&&cloudMode&&Cloud.account?.role==='admin'){try{adminCache=await Cloud.adminOverview();adminSelected=null;adminDocs=null;render();alertUser('Account list refreshed')}catch(err){alertUser(err.message)}return}
  if(cmd==='refreshaccount'&&cloudMode){try{await Cloud.refresh();render();alertUser('Account details refreshed')}catch(err){alertUser(err.message)}return}
  if(cmd==='changeemail'&&cloudMode){showModal(`<div class="eyebrow">ACCOUNT EMAIL</div><h2>Change sign-in email</h2><p>Supabase may require confirmation at both the current and new email addresses.</p><form id="changeEmailForm" class="profile-form"><label for="newAccountEmail">New email</label><input type="email" id="newAccountEmail" name="email" required autocomplete="email"><div class="btnrow"><button type="button" class="btn btn-outline" data-action="cancelmodal">Cancel</button><button class="btn btn-primary" type="submit">Request change</button></div></form>`);return}
@@ -389,7 +437,7 @@ document.addEventListener('click',async e=>{
   for(const item of await all('enrolments'))if(item.profileId===person.id)await remove('enrolments',item.id);
   for(const item of await all('profileStates'))if(item.profileId===person.id)await remove('profileStates',item.id);
   await remove('profiles',person.id);profiles=profiles.filter(p=>p.id!==person.id);await loadProfile(null);render();alertUser('Profile deleted');return}
- if(cmd==='import'||(cmd==='adminupload'&&cloudMode&&Cloud.account?.role==='admin')){$('importFile').click();return}
+ if(cmd==='import'||(cmd==='adminupload'&&cloudMode&&Cloud.account?.role==='admin')){adminExpectedUpdateId=null;$('importFile').click();return}
  if(cmd==='publishprogramme'&&cloudMode&&Cloud.account?.role==='admin'){await publishProgramme();return}
  if(cmd==='syncprogrammes'&&cloudMode){try{await syncPublishedPrograms();render()}catch(error){programmeSyncIssue=error.message;render();alertUser('Programme sync failed — see details in Library')}return}
  if(cmd==='restore'){$('restoreFile').click();return}

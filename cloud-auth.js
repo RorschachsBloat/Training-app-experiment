@@ -91,21 +91,38 @@ async function adminAthleteDocuments(ownerId){
 }
 async function publishedPrograms(){
  assertUser();
- const {data,error}=await client.from('peak_programme_releases')
-  .select('program_id,version,content,published_at').order('published_at',{ascending:true});
- if(error)throw Error('Cannot load published programmes: '+error.message+' (run PEAK_V5_PUBLISHING.sql in Supabase)');
- return data||[];
+ const releases=[],chunk=500;
+ for(let from=0;;from+=chunk){
+  const {data,error}=await client.from('peak_programme_releases')
+   .select('program_id,version,content,published_at,is_archived,archived_at').order('published_at',{ascending:true}).range(from,from+chunk-1);
+  if(error)throw Error('Cannot load published programmes: '+error.message+' (run PEAK_V5_2_ARCHIVING.sql in Supabase)');
+  releases.push(...(data||[]));if(!data||data.length<chunk)break;
+ }
+ return releases;
 }
 async function publishProgram(program){
  assertAdmin();
- const id=String(program.id||'');const version=Number(program.version);
+ const id=String(program.id||''),version=Number(program.version);
  if(!/^[a-z0-9_-]{3,90}$/.test(id)||!Number.isInteger(version)||version<1)throw Error('A valid Programme ID and integer Version are required');
- const {error}=await client.from('peak_programme_releases').upsert({
-  program_id:id,version,content:program,published_by:identity.id,
-  published_at:new Date().toISOString()
- },{onConflict:'program_id'});
- if(error)throw Error('Publication failed: '+error.message);
+ const current=await client.from('peak_programme_releases').select('program_id,version,is_archived').eq('program_id',id).maybeSingle();
+ if(current.error)throw Error('Could not check programme version: '+current.error.message);
+ if(current.data&&version<=current.data.version)throw Error('New programme updates need a higher Version than the published release');
+ // UPDATE deliberately omits is_archived. Uploading a newer version never silently restores a programme.
+ const row={version,content:program,published_by:identity.id,published_at:new Date().toISOString()};
+ const result=current.data
+  ?await client.from('peak_programme_releases').update(row).eq('program_id',id).select('program_id').single()
+  :await client.from('peak_programme_releases').insert({program_id:id,...row}).select('program_id').single();
+ if(result.error)throw Error('Publication failed: '+result.error.message);
 }
-root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,publishedPrograms,publishProgram,sendPasswordReset,finishPasswordReset,changeEmail,
+async function setProgrammeArchived(id,archived){
+ assertAdmin();
+ if(!/^[a-z0-9_-]{3,90}$/.test(String(id)))throw Error('Invalid Programme ID');
+ const {data,error}=await client.from('peak_programme_releases')
+  .update({is_archived:Boolean(archived)}).eq('program_id',id).select('program_id,is_archived').single();
+ if(error)throw Error('Archive action failed: '+error.message);
+ if(!data||data.is_archived!==Boolean(archived))throw Error('Archive status was not saved');
+ return data;
+}
+root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,publishedPrograms,publishProgram,setProgrammeArchived,sendPasswordReset,finishPasswordReset,changeEmail,
  get user(){return identity},get account(){return account},get recoveryPending(){return recoveryPending}};
 })(window);
