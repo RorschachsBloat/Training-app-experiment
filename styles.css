@@ -97,3 +97,5 @@
 .admin-set-values b{color:#f2fbf8}
 .admin-logged-at{display:block;font-size:10px;color:#90adb2;margin-top:7px}
 .auth-panel .auth-switch+.auth-switch{margin-top:9px}
+
+.rpe-not-used {align-self:center;justify-self:center;color:var(--muted,#8b95a2);font-size:.76rem;font-weight:700;letter-spacing:.08em}

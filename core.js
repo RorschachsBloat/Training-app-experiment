@@ -10,10 +10,12 @@ const movementKey=set=>`${set.kind}|${set.code}|${set.name}`;
 const readinessOffsets={1:-.05,2:-.025,3:0,4:.01,5:.02};
 const readinessScore=(state,session)=>clamp(Math.round(Number(state.readiness?.[session.id])||3),1,5);
 function exerciseMax(set,c){
- const v=c.variation[set.code]; if(v){return (hasNum(v.override)&&Number(v.override)>0)?Number(v.override):Number(c.maxes[v.family])*Number(v.ratio)}
- return Number(c.maxes[set.code]||c.maxes[set.family]||0);
+ const manual=Number(c.movementMaxes?.[set.code]);if(Number.isFinite(manual)&&manual>0)return manual;
+ const v=c.variation?.[set.code]; if(v){return (hasNum(v.override)&&Number(v.override)>0)?Number(v.override):Number(c.maxes[v.family])*Number(v.ratio)}
+ return Number(c.maxes?.[set.code]||c.maxes?.[set.family]||0);
 }
 function expect(set,applied,c,actualRpe){
+ if(set.rpeCapEnabled===false)return {expected:null,cap:null};
  const settings=c.settings; const isEligible=set.stage==='WORK'||(set.stage==='RAMP'&&(applied>=settings.rampThreshold||hasNum(actualRpe)));
  if(!isEligible)return {expected:null,cap:null};
  let base=2; const pct=Math.max(.5,applied);
@@ -36,11 +38,21 @@ function calculateSession(session,state){
    for(let i=0;i<source.count;i++){
     const key=source.id+'_s'+(i+1),log=logs[key]||{},skipped=log.status==='skipped';
     const complete=!skipped&&(log.done||hasNum(log.weight)||hasNum(log.rpe)||hasNum(log.reps));
-    o.push({...source,key,ordinal:i+1,count:source.count,log,complete,skipped,cap:hasNum(source.targetRpe)?Math.min(c.settings.absoluteCap,source.targetRpe+c.settings.toleranceHard):null,expected:source.targetRpe,adjusted:false,readiness});
+    o.push({...source,key,ordinal:i+1,count:source.count,log,complete,skipped,cap:source.rpeCapEnabled===false?null:hasNum(source.targetRpe)?Math.min(c.settings.absoluteCap,source.targetRpe+c.settings.toleranceHard):null,expected:source.rpeCapEnabled===false?null:source.targetRpe,adjusted:false,readiness});
    }
    continue;
   }
   const key=source.id,log=logs[key]||{},skipped=log.status==='skipped',complete=!skipped&&(log.done||hasNum(log.weight)||hasNum(log.rpe)||hasNum(log.reps));
+  const setType=source.setType||'STANDARD';
+  // Fixed-weight AMRAP / rep-max attempts preserve the athlete's goal and never
+  // borrow percentage reductions from conventional barbell prescriptions.
+  if(setType==='AMRAP'||setType==='REP_MAX'){
+   const prescribedKg=setType==='AMRAP'?Number(source.targetKg):Number(source.goalKg);
+   const target=complete&&hasNum(log.lockedKg)?Number(log.lockedKg):prescribedKg;
+   const goalMet=hasNum(log.weight)&&hasNum(log.reps)?Number(log.weight)>=prescribedKg&&Number(log.reps)>=Number(source.reps):null;
+   o.push({...source,key,log,complete,skipped,applied:null,target,original:prescribedKg,readinessKg:prescribedKg,expected:null,cap:null,cumulative:0,drop:0,status:'',adjusted:false,readiness,movement:movementKey(source),goalMet});
+   continue;
+  }
   const movement=movementKey(source),movementDrop=perMovement.get(movement)||0;
   const cumulative=scopeAll?globalDrop:movementDrop;
   const baseline=clamp(Number(source.pct)+readinessOffset,0,1);
@@ -93,12 +105,12 @@ function weekStats(week,state){let count=0,total=0,tonnage=0,capHits=0,comp=0,va
   ariSQ:sq?intensitySQ/sq:0,ariBP:bp?intensityBP/bp:0,ariDL:dl?intensityDL/dl:0,topSQ,topBP,topDL};
 }
 function makeCSV(state){
- const header=['Week','Phase','Day','Exercise','Code','Set','Stage','Reps prescribed','Reps actual','Missed reps','Set status','Session readiness','Plan %','Applied %','Planned kg','Prescribed kg','Actual kg','Expected RPE','RPE cap','Actual RPE','Adjustment for later sets (pp)','RPE scope','Logged at'];
+ const header=['Week','Phase','Day','Exercise','Code','Set','Stage','Set type','Reps target','Actual reps','Missed reps','Goal weight kg','Goal achieved','Set status','Session readiness','Plan %','Applied %','Planned kg','Prescribed kg','Actual kg','Expected RPE','RPE cap','Actual RPE','Adjustment for later sets (pp)','RPE scope','Logged at'];
  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';let rows=[header];
  for(const session of root.PROGRAM.sessions){
   const model=calculateSession(session,state);for(const s of model.sets){if(!s.complete&&!s.skipped)continue;
    const missed=Number.isFinite(Number(s.reps))&&hasNum(s.log.reps)?Math.max(0,Number(s.reps)-Number(s.log.reps)):'';
-   rows.push([session.week,session.phase,session.day,s.name,s.code,s.kind==='ACC'?s.ordinal:s.step,s.stage,s.repsText,hasNum(s.log.reps)?s.log.reps:'',missed,s.skipped?'Skipped':missed>0?'Missed reps':'Logged',model.readiness,s.kind==='BAR'?fixed(s.pct*100):'',s.kind==='BAR'?fixed(s.applied*100):'',s.kind==='BAR'?s.original:'',s.kind==='BAR'?s.target:'',s.log.weight??'',s.expected===null?'':round1(s.expected),s.cap===null?'':round1(s.cap),s.log.rpe??'',s.kind==='BAR'?fixed(s.drop*100):'',model.applyRpeToAll?'All movements':'Movement only',s.log.at||'']);
+   rows.push([session.week,session.phase,session.day,s.name,s.code,s.kind==='ACC'?s.ordinal:s.step,s.stage,s.setType||'STANDARD',s.repsText,hasNum(s.log.reps)?s.log.reps:'',missed,['AMRAP','REP_MAX'].includes(s.setType)?s.original:'',s.goalMet===null?'':s.goalMet?'Yes':'No',s.skipped?'Skipped':missed>0?'Missed reps':'Logged',model.readiness,s.kind==='BAR'&&Number.isFinite(s.pct)?fixed(s.pct*100):'',s.kind==='BAR'&&Number.isFinite(s.applied)?fixed(s.applied*100):'',s.kind==='BAR'?s.original:'',s.kind==='BAR'?s.target:'',s.log.weight??'',s.expected===null?'':round1(s.expected),s.cap===null?'':round1(s.cap),s.log.rpe??'',s.kind==='BAR'?fixed(s.drop*100):'',model.applyRpeToAll?'All movements':'Movement only',s.log.at||'']);
   }
  }
  return rows.map(row=>row.map(q).join(',')).join('\r\n');

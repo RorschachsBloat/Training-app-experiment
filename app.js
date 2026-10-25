@@ -5,7 +5,7 @@ const DB='peak-training-data', DBVER=2;let db,programs=[],profiles=[],profile=nu
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=n=>Number(n||0).toLocaleString('en-GB',{maximumFractionDigits:1}),f=n=>Number(n||0).toFixed(1).replace(/\.0$/,''),slug=s=>String(s||'').replace(/[^a-z0-9]+/ig,'_').slice(0,60);
 const countSets=s=>s.sets.reduce((n,x)=>n+(x.kind==='ACC'?x.count:1),0);
-const freshState=p=>({logs:{},config:JSON.parse(JSON.stringify(p.defaults)),week:1,sessionId:p.sessions[0]?.id||'',history:[],readiness:{},applyRpeToAll:false});
+const freshState=p=>({logs:{},config:{...JSON.parse(JSON.stringify(p.defaults)),movementMaxes:{...(p.defaults.movementMaxes||{})}},week:1,sessionId:p.sessions[0]?.id||'',history:[],readiness:{},applyRpeToAll:false});
 const tx=(store,mode='readonly')=>db.transaction(store,mode).objectStore(store);
 function req(r){return new Promise((yes,no)=>{r.onsuccess=()=>yes(r.result);r.onerror=()=>no(r.error)})}
 function openDB(){return new Promise((yes,no)=>{const r=indexedDB.open(DB,DBVER);r.onupgradeneeded=()=>{const d=r.result;for(const s of ['programmes','states','profiles','enrolments','profileStates'])if(!d.objectStoreNames.contains(s))d.createObjectStore(s,{keyPath:'id'})};r.onsuccess=()=>yes(r.result);r.onerror=()=>no(r.error)})}
@@ -21,7 +21,7 @@ function activate(id){
  if(!profile||!isEnrolled(id))return false;
  const p=programs.find(x=>x.id===id);if(!p)return false;
  activeId=id;P=p;window.PROGRAM=p;S=states[id]||freshState(p);states[id]=S;
- S.config=S.config||structuredClone(p.defaults);S.readiness=S.readiness||{};if(typeof S.applyRpeToAll!=='boolean')S.applyRpeToAll=false;
+ S.config=S.config||structuredClone(p.defaults);S.config.movementMaxes=S.config.movementMaxes||{};for(const [code,v] of Object.entries(S.config.variation||{})){if(Number(v.override)>0&&!(Number(S.config.movementMaxes[code])>0))S.config.movementMaxes[code]=Number(v.override)}S.readiness=S.readiness||{};if(typeof S.applyRpeToAll!=='boolean')S.applyRpeToAll=false;
  week=Math.min(P.weeks.length,Math.max(1,Number(S.week)||1));sessionId=S.sessionId||P.sessions[0]?.id;
  profile.activeProgramId=id;
  // Record profile selection even if the user has not yet logged a set.
@@ -96,7 +96,7 @@ function adminView(){
    details=`<div class="panel admin-details"><h3>${esc(person.username)} — training history</h3><p class="muted">${esc(person.email)} · Joined ${esc(new Date(person.created_at).toLocaleDateString('en-GB'))}</p>${ids.length?`<div class="admin-programmes">${menu}</div>${adminTrainingDetails(programme,current)}`:'<p>This athlete has no saved programmes or training logs yet.</p>'}<p class="micro">Read-only. These are the athlete’s recorded values, not editable coaching targets.</p></div>`;
   }
  }
- return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>Athlete training logs<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'}. Select an athlete, then a programme, to inspect their logged training. Other athletes cannot view these records.</p></div><div class="admin-list">${rows||'<p>No registered accounts found.</p>'}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
+ return `<button class="back" data-action="profile">← My profile</button><div class="pagehead"><span class="eyebrow">AUTHORISED ADMIN ONLY</span><h1>Athlete training logs<span class="accent">.</span></h1><p>${accounts.length} registered account${accounts.length===1?'':'s'}. Select an athlete, then a programme, to inspect their logged training. Other athletes cannot view these records.</p></div><section class="panel"><h3>Publish a programme update</h3><p class="muted">Upload a PEAK Excel or JSON programme file. Keep the Programme ID and increase Version to publish revised future sessions to every athlete. Already-started sessions keep their original weights, exercise selection and logs.</p><button class="btn btn-primary" data-action="adminupload">↑ Upload programme update</button><p class="micro">Athletes receive updates when they next sign in or press Sync published programmes. Only Supabase administrators can publish.</p></section><div class="admin-list">${rows||'<p>No registered accounts found.</p>'}</div>${details}<button class="btn btn-outline" data-action="adminrefresh">↻ Refresh accounts</button>`;
 }
 function adminTrainingDetails(programme,state){
  if(!state)return '<p class="empty">No saved training state for this programme.</p>';
@@ -112,9 +112,9 @@ function adminTrainingDetails(programme,state){
     if(!hasEntry(log))continue;
     const prescribed=Number(set.reps),actual=C.hasNum(log.reps)?Number(log.reps):null;
     const missed=actual!==null&&Number.isFinite(prescribed)?Math.max(0,prescribed-actual):0;
-    const label=set.kind==='ACC'?`Set ${i}`:`${set.step||'Set'}`;
+    const label=set.kind==='ACC'?`Set ${i}`:`${set.step||'Set'}`;const type=set.setType||'STANDARD';const goalKg=type==='AMRAP'?set.targetKg:type==='REP_MAX'?set.goalKg:null;const achieved=goalKg!=null&&actual!==null&&C.hasNum(log.weight)?(Number(log.weight)>=goalKg&&actual>=Number(set.reps)?'Goal met':'Below goal'):'';
     const status=log.status==='skipped'?'Skipped':missed?`${missed} missed rep${missed===1?'':'s'}`:log.done?'Completed':'Logged';
-    entries.push(`<div class="admin-set ${log.status==='skipped'?'is-skipped':''}"><div class="admin-set-title"><strong>${esc(set.name||set.code||'Movement')}</strong><span class="${missed?'warn':''}">${esc(status)}</span></div><div class="admin-set-values"><span>${esc(label)}</span><span>Reps: <b>${actual===null?'—':esc(actual)} / ${esc(set.repsText||set.reps||'—')}</b></span><span>Weight: <b>${C.hasNum(log.weight)?esc(log.weight)+' kg':'—'}</b></span><span>RPE: <b>${C.hasNum(log.rpe)?esc(log.rpe):'—'}</b></span></div>${log.at?`<small class="admin-logged-at">Saved ${esc(new Date(log.at).toLocaleString('en-GB'))}</small>`:''}</div>`);
+    entries.push(`<div class="admin-set ${log.status==='skipped'?'is-skipped':''}"><div class="admin-set-title"><strong>${esc(set.name||set.code||'Movement')}</strong><span class="${missed?'warn':''}">${esc(status)}</span></div><div class="admin-set-values"><span>${esc(label)}${type!=='STANDARD'?' · '+esc(type.replace('_',' ')):''}</span><span>Reps: <b>${actual===null?'—':esc(actual)} / ${esc(set.repsText||set.reps||'—')}</b></span>${goalKg!=null?`<span>Target: <b>${esc(goalKg)} kg</b></span>`:''}<span>Weight: <b>${C.hasNum(log.weight)?esc(log.weight)+' kg':'—'}</b></span>${achieved?`<span><b>${achieved}</b></span>`:''}<span>RPE: <b>${C.hasNum(log.rpe)?esc(log.rpe):'—'}</b></span></div>${log.at?`<small class="admin-logged-at">Saved ${esc(new Date(log.at).toLocaleString('en-GB'))}</small>`:''}</div>`);
    }
   }
   const readiness=state.readiness?.[session.id];
@@ -146,19 +146,22 @@ function home(){const w=activeWeek(),sessions=P.sessions.filter(s=>s.week===week
  <div class="week-summary"><div><strong>${esc(w?.phase||'Training')}</strong><span>${done} of ${all} sets logged this week</span></div><b>${all?Math.round(100*done/all):0}%</b></div><div class="progressbar"><span style="width:${all?100*done/all:0}%"></span></div>
  <div class="sectiontitle subheading"><h2>Training sessions</h2><span class="pill">${sessions.length} days</span></div>
  ${sessions.map(s=>{let n=logsFor(s),tot=countSets(s);return `<button class="daycard" data-session="${esc(s.id)}"><span class="daypill">D${String(s.day).padStart(2,'0')}</span><span class="dayinfo"><strong>${esc(s.title)}</strong><small>${s.rest?esc(s.rest):`${n} / ${tot} sets completed · ${esc(s.phase)}`}</small><span class="tinybar"><i style="width:${tot?n/tot*100:0}%"></i></span></span><span class="arrow">↗</span></button>`}).join('')||'<div class="empty">No sessions scheduled for this week.</div>'}</section>`}
-function library(){const count=Object.keys(enrolled).length;return `<div class="pagehead"><span class="eyebrow">${profile?esc(profile.name.toUpperCase())+' / ':''}PROGRAMME LIBRARY</span><h1>Choose your programme<span class="accent">.</span></h1><p>Add a programme to your profile, switch between saved programmes, or import another training block. Each profile has its own progress.</p></div><div class="catalogue-summary"><span>${count} saved to your profile</span><button class="textlink" data-action="profile">View profile ↗</button></div><div class="programme-list">${programs.map(cardProgramme).join('')}</div><div class="importactions library-import"><button class="btn btn-outline" data-action="import">＋ Import programme</button><a class="btn btn-outline" href="PEAK_Programme_Template.xlsx" download>↓ Excel template</a></div><div class="callout"><strong>Adding and updating programmes</strong><p>Import a completed PEAK Excel template or compatible JSON file. New programmes are added to the catalogue and your profile. A matching Programme ID updates the programme while protecting logged sets across local profiles.</p></div>`}
-function stageTag(s){return s.stage==='RAMP'?'Ramp':s.stage==='WORK'?'Working':'Accessory'}
+function library(){const count=Object.keys(enrolled).length;return `<div class="pagehead"><span class="eyebrow">${profile?esc(profile.name.toUpperCase())+' / ':''}PROGRAMME LIBRARY</span><h1>Choose your programme<span class="accent">.</span></h1><p>Add a programme to your profile, switch between saved programmes, or import another training block. Each profile has its own progress.</p></div><div class="catalogue-summary"><span>${count} saved to your profile</span><button class="textlink" data-action="profile">View profile ↗</button></div><div class="programme-list">${programs.map(cardProgramme).join('')}</div><div class="importactions library-import"><button class="btn btn-outline" data-action="import">＋ Import programme</button>${cloudMode?'<button class="btn btn-outline" data-action="syncprogrammes">↻ Sync published programmes</button>':''}<a class="btn btn-outline" href="PEAK_Programme_Template.xlsx" download>↓ Excel template</a></div><div class="callout"><strong>Adding and updating programmes</strong><p>Import a completed PEAK Excel template or compatible JSON file. Supports STANDARD, AMRAP and REP_MAX barbell sets. Each programme has its own maximums. Bloay can publish versioned updates to all cloud athletes; previously started sessions and all training logs are protected.</p></div>`}
+function stageTag(s){return s.setType==='AMRAP'?'AMRAP':s.setType==='REP_MAX'?'Rep max':s.stage==='RAMP'?'Ramp':s.stage==='WORK'?'Working':'Accessory'}
 function renderExercise(group){
  const x=group[0],classification=x.kind==='ACC'?'accessory':x.family==='SQ'?'squat':x.family==='BP'?'bench':'deadlift';
  const allSkipped=group.every(y=>y.skipped),someSkipped=group.filter(y=>y.skipped).length;
  const groupKeys=esc(JSON.stringify(group.map(y=>y.key)));
  return `<section class="exercise ${classification} ${allSkipped?'exercise-skipped':''}"><div class="exercisehead"><span class="exerciseicon">${x.kind==='ACC'?'ACC':x.family}</span><div class="exercise-title"><h3>${esc(x.name)}</h3><p>${x.kind==='ACC'?'Accessory / hypertrophy':x.stage==='RAMP'?'Technique + working sets':'Barbell loading'} · ${group.length} set${group.length>1?'s':''}${someSkipped?` · ${someSkipped} skipped`:''}</p></div><label class="skip-group"><input type="checkbox" data-skip-movement="${groupKeys}" ${allSkipped?'checked':''}><span>Skip movement</span></label></div>
  <div class="setlabels"><span>Set</span><span>Prescription</span><span>Actual kg</span><span>RPE</span></div>${group.map((s,i)=>{
- const target=s.kind==='BAR'?`${num(s.target)}<small>kg</small>`:(s.repsText?esc(s.repsText):'—');
- const subtitle=s.kind==='BAR'?`${esc(s.repsText)} reps · ${f(s.applied*100)}% · ${stageTag(s)}`:`${esc(s.repsText)} reps${s.rir?' · RIR '+esc(s.rir):''}`;
- const prescribed=Number(s.reps),repsInput=Number.isFinite(prescribed)&&prescribed>=0;
- const miss=repsInput&&C.hasNum(s.log.reps)?Math.max(0,prescribed-Number(s.log.reps)):0;
- return `<div class="setrecord ${s.skipped?'is-skipped':''}" data-setrecord="${esc(s.key)}"><div class="setrow ${s.complete?'completed':''} ${s.adjusted?'adjusted':''}" data-setrow="${esc(s.key)}"><div class="setnumber"><span>${s.kind==='ACC'?s.ordinal:s.step.replace(/^.*?\b(\d+)\/(\d+)$/,'$1')||i+1}</span><input type="checkbox" aria-label="Mark set complete" data-done="${esc(s.key)}" ${s.log.done?'checked':''} ${s.skipped?'disabled':''}></div><div class="setprescription"><strong>${target}</strong><small>${subtitle}</small>${s.kind==='BAR'&&s.adjusted?`<em>Adjusted from ${num(s.original)} kg</em>`:''}${s.cap!==null?`<span class="rpethreshold">Expected ${f(s.expected)} · cap ${f(s.cap)}</span>`:''}${s.status?`<em class="warn">${esc(s.status)} · ${S.applyRpeToAll?'all later movements':'this movement only'}</em>`:''}${s.skipped?'<em>Skipped — not counted as completed</em>':''}${miss?`<em class="warn">${f(miss)} rep${miss===1?'':'s'} missed</em>`:''}</div><input aria-label="Actual weight in kilograms" data-log="${esc(s.key)}" data-field="weight" type="number" min="0" max="1500" step="0.5" inputmode="decimal" placeholder="kg" value="${esc(s.log.weight??'')}" ${s.skipped?'disabled':''}><input aria-label="Actual RPE" data-log="${esc(s.key)}" data-field="rpe" type="number" min="1" max="10" step="0.5" inputmode="decimal" placeholder="RPE" value="${esc(s.log.rpe??'')}" ${s.skipped?'disabled':''}></div><div class="setextras"><label class="actual-reps">Actual reps <input aria-label="Actual repetitions completed" type="number" min="0" max="${repsInput?prescribed:1000}" step="1" inputmode="numeric" data-log="${esc(s.key)}" data-field="reps" placeholder="${repsInput?prescribed:'reps'}" value="${esc(s.log.reps??'')}" ${s.skipped?'disabled':''}></label><label class="skip-set"><input type="checkbox" data-skip-set="${esc(s.key)}" ${s.skipped?'checked':''}><span>Skipped set</span></label>${miss?`<span class="rep-summary">${f(s.log.reps)} / ${f(prescribed)} reps performed</span>`:''}</div></div>`}).join('')}</section>`;
+ const special=['AMRAP','REP_MAX'].includes(s.setType);
+ const rpeUnused=s.rpeCapEnabled===false||special;
+  const target=s.kind==='BAR'?`${num(s.target)}<small>kg</small>`:(s.repsText?esc(s.repsText):'—');
+  const subtitle=s.kind==='BAR'?(special?`${s.setType==='AMRAP'?'AMRAP · target':'Rep max · goal'} ${esc(s.repsText)} reps at ${num(s.original)} kg`:`${esc(s.repsText)} reps · ${f(s.applied*100)}% · ${stageTag(s)}`):`${esc(s.repsText)} reps${s.rir?' · RIR '+esc(s.rir):''}`;
+  const prescribed=Number(s.reps),repsInput=Number.isFinite(prescribed)&&prescribed>=0;
+  const miss=repsInput&&C.hasNum(s.log.reps)?Math.max(0,prescribed-Number(s.log.reps)):0;
+  const outcome=special&&(C.hasNum(s.log.weight)||C.hasNum(s.log.reps))?`<span class="rep-summary"><strong>Outcome:</strong> ${C.hasNum(s.log.weight)?f(s.log.weight)+' kg':'— kg'} × ${C.hasNum(s.log.reps)?f(s.log.reps):'—'} reps${s.goalMet===true?' · Goal met':s.goalMet===false?' · Below goal':''}</span>`:'';
+ return `<div class="setrecord ${s.skipped?'is-skipped':''}" data-setrecord="${esc(s.key)}"><div class="setrow ${s.complete?'completed':''} ${s.adjusted?'adjusted':''}" data-setrow="${esc(s.key)}"><div class="setnumber"><span>${s.kind==='ACC'?s.ordinal:String(s.step||i+1).replace(/^.*?\b(\d+)\/(\d+)$/,'$1')||i+1}</span><input type="checkbox" aria-label="Mark set complete" data-done="${esc(s.key)}" ${s.log.done?'checked':''} ${s.skipped?'disabled':''}></div><div class="setprescription"><strong>${target}</strong><small>${subtitle}</small>${s.kind==='BAR'&&s.adjusted?`<em>Adjusted from ${num(s.original)} kg</em>`:''}${rpeUnused?'<span class="rpethreshold">RPE cap: not used</span>':s.cap!==null?`<span class="rpethreshold">Expected ${f(s.expected)} · cap ${f(s.cap)}</span>`:''}${s.status?`<em class="warn">${esc(s.status)} · ${S.applyRpeToAll?'all later movements':'this movement only'}</em>`:''}${s.skipped?'<em>Skipped — not counted as completed</em>':''}${miss?`<em class="warn">${f(miss)} rep${miss===1?'':'s'} missed</em>`:''}</div><input aria-label="Actual weight in kilograms" data-log="${esc(s.key)}" data-field="weight" type="number" min="0" max="1500" step="0.5" inputmode="decimal" placeholder="kg" value="${esc(s.log.weight??'')}" ${s.skipped?'disabled':''}>${rpeUnused?'<span class="rpe-not-used" aria-label="RPE not used for this movement">N/A</span>':`<input aria-label="Actual RPE" data-log="${esc(s.key)}" data-field="rpe" type="number" min="1" max="10" step="0.5" inputmode="decimal" placeholder="RPE" value="${esc(s.log.rpe??'')}" ${s.skipped?'disabled':''}>`}</div><div class="setextras"><label class="actual-reps">Actual reps <input aria-label="Actual repetitions completed" type="number" min="0" max="${special?1000:repsInput?prescribed:1000}" step="1" inputmode="numeric" data-log="${esc(s.key)}" data-field="reps" placeholder="${repsInput?prescribed:'reps'}" value="${esc(s.log.reps??'')}" ${s.skipped?'disabled':''}></label><label class="skip-set"><input type="checkbox" data-skip-set="${esc(s.key)}" ${s.skipped?'checked':''}><span>Skipped set</span></label>${miss?`<span class="rep-summary">${f(s.log.reps)} / ${f(prescribed)} reps performed</span>`:''}${outcome}</div></div>`}).join('')}</section>`;
 }
 function sessionView(){const s=session();if(!s)return `<div class="empty">Session not found.</div>`;const result=C.calculateSession(s,S),groups=[];for(const set of result.sets){const prev=groups.at(-1);if(prev&&prev[0].name===set.name&&prev[0].code===set.code&&prev[0].kind===set.kind)prev.push(set);else groups.push([set])}
  const skipped=result.sets.filter(x=>x.skipped).length,readiness=C.readinessScore(S,s),off=C.readinessOffsets[readiness];
@@ -177,11 +180,12 @@ function progress(){let logged=0,total=0,tonnage=0,cap=0,skipped=0,missed=0;cons
  <div class="panel"><h3>Completed weekly tonnage</h3><div class="barchart" role="img" aria-label="Weekly completed tonnage">${weeks.map(w=>`<div class="baritem" title="Week ${w.week}: ${f(w.tonnage)} kilograms"><div style="height:${w.tonnage?Math.max(2,100*w.tonnage/max):2}%"></div><small>${w.week===1||w.week%2===0?w.week:''}</small></div>`).join('')}</div><p class="micro">Based on actual weights × repetitions for completed barbell sets.</p></div>
  <div class="panel"><h3>Your data belongs to you</h3><p class="muted">Export this programme's set logs as CSV. Full JSON backups include all profiles, their saved programmes, settings and logs on this device; the app can restore them later.</p><div class="stack"><button class="btn btn-primary" data-action="exportcsv">↓ Export training CSV</button><button class="btn btn-outline" data-action="backup">↓ Back up all profiles</button><button class="btn btn-outline" data-action="restore">↑ Restore backup</button></div></div>`}
 function settings(){const c=S.config;function inp(label,group,key,value,detail,step){return `<label class="configrow"><span><b>${esc(label)}</b>${detail?`<small>${esc(detail)}</small>`:''}</span><input type="number" min="0" step="${step||'.1'}" value="${esc(value??0)}" data-setting="${group}" data-key="${esc(key)}"></label>`}
- return `<div class="pagehead"><span class="eyebrow">ATHLETE + TRAINING ENGINE</span><h1>Your settings<span class="accent">.</span></h1><p>Change lift maximums or the RPE engine. Future uncompleted sets recalculate automatically.</p></div><div class="panel"><h3>Competition maximums</h3>${inp('Squat · kg','maxes','SQ',c.maxes.SQ)}${inp('Bench · kg','maxes','BP',c.maxes.BP)}${inp('Deadlift · kg','maxes','DL',c.maxes.DL)}</div>
- <div class="panel"><h3>Variation maximum overrides</h3><p class="muted">0 uses the competition 1RM × variation ratio.</p>${Object.entries(c.variation||{}).map(([key,v])=>inp(v.name||key,'variation',key,v.override||0,`${f(v.ratio*100)}% of ${v.family}`,'2.5')).join('')||'<p class="muted">No variations in this programme.</p>'}</div>
+ const movements=[...new Map(P.sessions.flatMap(s=>s.sets).filter(s=>s.kind==='BAR'&&!['SQ','BP','DL'].includes(s.code)).map(s=>[s.code,s])).values()];
+ return `<div class="pagehead"><span class="eyebrow">${esc(P.title)} / PROGRAMME SETTINGS</span><h1>Programme maxes<span class="accent">.</span></h1><p>All maximums on this page belong to <strong>${esc(P.title)}</strong> only. Switching programmes switches to that programme's independent maximums; existing workout results stay unchanged.</p></div><div class="panel"><h3>Competition maximums — ${esc(P.title)}</h3>${inp('Squat · kg','maxes','SQ',c.maxes.SQ)}${inp('Bench · kg','maxes','BP',c.maxes.BP)}${inp('Deadlift · kg','maxes','DL',c.maxes.DL)}</div>
+ <div class="panel"><h3>Individual movement maximums</h3><p class="muted">Optional absolute max for each variation in <strong>${esc(P.title)}</strong>. Enter 0 to inherit the competition 1RM × movement ratio. Other programmes are unaffected.</p>${movements.map(m=>{const v=c.variation?.[m.code]||{};return inp(m.name+' ('+m.code+')','movementMaxes',m.code,c.movementMaxes?.[m.code]||0,`Estimated: ${f(C.exerciseMax({...m,code:m.code},{...c,movementMaxes:{...c.movementMaxes,[m.code]:0}}))} kg · ${f((v.ratio||1)*100)}% of ${m.family}`,'2.5')}).join('')||'<p class="muted">No variations in this programme.</p>'}</div>
  <div class="panel"><h3>RPE reduction scope</h3><label class="scope-checkbox"><input type="checkbox" data-rpe-all ${S.applyRpeToAll?'checked':''}><span><strong>Apply reductions across all movements</strong><small>Unchecked by default. Otherwise adjustments only affect the same movement.</small></span></label></div>
  <details class="panel"><summary>Advanced RPE safeguard settings</summary><div class="configlist">${Object.entries(c.settings||{}).map(([k,v])=>inp(k,'settings',k,v,'','0.025')).join('')}</div></details>
- <div class="panel"><h3>App installation & updates</h3><p class="muted">The web app receives interface improvements when the website is updated. Training programme changes can be imported as a new Excel or JSON file.</p><button class="btn btn-outline" data-action="checkupdate">Check for web app update</button><p class="micro">Current app: 4.1 · Programme: v${esc(P.version||1)}</p>${S.history?.length?`<h4>Programme update history</h4><ul class="history">${S.history.slice().reverse().map(h=>`<li>${esc(h.date?.slice(0,10))} · v${esc(h.from)} → v${esc(h.to)} · ${h.protected} started sessions preserved</li>`).join('')}</ul>`:''}</div>`}
+ <div class="panel"><h3>App installation & updates</h3><p class="muted">The web app receives interface improvements when the website is updated. Training programme changes can be imported as a new Excel or JSON file.</p><button class="btn btn-outline" data-action="checkupdate">Check for web app update</button><p class="micro">Current app: 5.0 · Programme: v${esc(P.version||1)}</p>${S.history?.length?`<h4>Programme update history</h4><ul class="history">${S.history.slice().reverse().map(h=>`<li>${esc(h.date?.slice(0,10))} · v${esc(h.from)} → v${esc(h.to)} · ${h.protected} started sessions preserved</li>`).join('')}</ul>`:''}</div>`}
 function render(){if(!profile&&view!=='profiles')view='profiles';else if(profile&&!P&&!['profiles','profile','library','admin'].includes(view))view='profile';header();updatedStatus();$('main').innerHTML=view==='profiles'?chooser():view==='admin'?adminView():view==='profile'?profileView():view==='library'?library():view==='progress'?progress():view==='settings'?settings():view==='session'?sessionView():home()}
 function download(filename,text,type){const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(url)},2000)}
 async function backup(){const ps=await all('programmes'),people=await all('profiles'),enrolments=await all('enrolments'),saved=await all('profileStates');download('PEAK_Profiles_Backup_'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({format:'PEAK_TRAINING_BACKUP',version:2,exported:new Date().toISOString(),activeProfileId:profile?.id||'',programmes:ps,profiles:people,enrolments,profileStates:saved},null,2),'application/json')}
@@ -189,30 +193,79 @@ function closedModal(){pendingImport=null;$('modal').classList.add('hidden');$('
 function showModal(html){$('modalBody').innerHTML=html;$('modal').classList.remove('hidden')}
 function hasEntry(log){return log&&(log.done||C.hasNum(log.weight)||C.hasNum(log.rpe)||C.hasNum(log.reps)||log.status==='skipped')}
 function mergeUpdatedProgramme(oldP,newP,oldState){const prev=new Map(oldP.sessions.map(s=>[s.id,s]));let protectedCount=0;const updated=structuredClone(newP);
- updated.sessions=updated.sessions.map(s=>{const old=prev.get(s.id);if(!old)return s;let protectedThis=false;for(const source of old.sets){if(source.kind==='ACC'){for(let i=1;i<=source.count;i++)if(hasEntry(oldState.logs[source.id+'_s'+i]))protectedThis=true}else if(hasEntry(oldState.logs[source.id]))protectedThis=true}if(protectedThis){protectedCount++;return old}return s});
- // Preserve fully completed sessions that disappear from the update.
- for(const old of oldP.sessions)if(!updated.sessions.some(x=>x.id===old.id)){let keep=old.sets.some(source=>source.kind==='ACC'?Array.from({length:source.count},(_,i)=>hasEntry(oldState.logs[source.id+'_s'+(i+1)])).some(Boolean):hasEntry(oldState.logs[source.id]));if(keep){updated.sessions.push(old);protectedCount++}}
+ const started=old=>Boolean(oldState.readiness&&Object.hasOwn(oldState.readiness,old.id))||old.sets.some(source=>source.kind==='ACC'?Array.from({length:source.count},(_,i)=>hasEntry(oldState.logs?.[source.id+'_s'+(i+1)])).some(Boolean):hasEntry(oldState.logs?.[source.id]));
+ // Snapshot the complete original prescription for every session with recorded activity.
+ // Changed set IDs, weights, exercises and even removed days cannot orphan logged work.
+ updated.sessions=updated.sessions.map(s=>{const old=prev.get(s.id);if(!old||!started(old))return s;protectedCount++;return structuredClone(old)});
+ for(const old of oldP.sessions)if(!updated.sessions.some(x=>x.id===old.id)&&started(old)){updated.sessions.push(structuredClone(old));protectedCount++}
  updated.sessions.sort((a,b)=>a.week-b.week||a.day-b.day);
- for(const oldWeek of oldP.weeks){if(updated.sessions.some(s=>s.week===oldWeek.week)&&!updated.weeks.some(w=>w.week===oldWeek.week))updated.weeks.push(oldWeek)}
+ for(const oldWeek of oldP.weeks)if(updated.sessions.some(s=>s.week===oldWeek.week)&&!updated.weeks.some(w=>w.week===oldWeek.week))updated.weeks.push(structuredClone(oldWeek));
  updated.weeks.sort((a,b)=>a.week-b.week);
  return {updated,protectedCount};
 }
 async function importProgramme(file){try{const p=await Imp.parseFile(file);const current=programs.find(x=>x.id===p.id),oldState=states[p.id];const hasOld=!!current;
  pendingImport=p;const count=p.sessions.reduce((n,s)=>n+countSets(s),0);
- showModal(`<div class="eyebrow">${hasOld?'PROGRAMME UPDATE':'NEW PROGRAMME'}</div><h2>${esc(p.title)}</h2><p class="muted">${p.weeks.length} weeks · ${p.sessions.length} sessions · ${count} sets · Version ${esc(p.version)}</p><p>${hasOld?`This matches the existing Programme ID <b>${esc(p.id)}</b> (installed version ${esc(current.version||1)}). Started sessions and recorded logs will be preserved. Unstarted sessions will use the imported prescriptions.`:`Install <b>${esc(p.id)}</b> as a new programme? It will be added to your library.`}</p>${hasOld&&Number(p.version)<Number(current.version)?'<div class="notice danger">This update has an older version number than the installed programme.</div>':''}<div class="btnrow"><button class="btn btn-outline" data-action="cancelmodal">Cancel</button><button class="btn btn-primary" data-action="installprogramme">${hasOld?'Install update':'Add programme'}</button></div>`);
+ showModal(`<div class="eyebrow">${hasOld?'PROGRAMME UPDATE':'NEW PROGRAMME'}</div><h2>${esc(p.title)}</h2><p class="muted">${p.weeks.length} weeks · ${p.sessions.length} sessions · ${count} sets · Version ${esc(p.version)}</p><p>${hasOld?`This matches the existing Programme ID <b>${esc(p.id)}</b> (installed version ${esc(current.version||1)}). Started sessions and recorded logs will be preserved. Unstarted sessions will use the imported prescriptions.`:`Install <b>${esc(p.id)}</b> as a new programme? It will be added to your library.`}</p>${hasOld&&Number(p.version)<=Number(current.version)?'<div class="notice danger">Use a higher Version number for updates. Older versions cannot be published.</div>':''}<div class="btnrow"><button class="btn btn-outline" data-action="cancelmodal">Cancel</button><button class="btn btn-outline" data-action="installprogramme">${hasOld?'Install for me':'Add to my library'}</button>${cloudMode&&Cloud.account?.role==='admin'?`<button class="btn btn-primary" data-action="publishprogramme">Publish to all athletes</button>`:''}</div>`);
  }catch(e){alertUser('Import failed: '+e.message);console.error(e)}}
-async function installProgramme(){const p=pendingImport;if(!p)return;const old=programs.find(x=>x.id===p.id);
- if(old){
-  // A catalogue programme may be shared by several profiles on this browser.
-  // Protect any session started in ANY profile when the global prescription changes.
-  const saved=(await all('profileStates')).filter(s=>s.programId===p.id),union={logs:{}};
-  for(const item of saved)Object.assign(union.logs,item.data?.logs||{});
-  const {updated,protectedCount}=mergeUpdatedProgramme(old,p,union);
-  await put('programmes',updated);
-  for(const item of saved){const st=item.data||freshState(old);st.history=st.history||[];st.history.push({date:new Date().toISOString(),from:old.version||1,to:p.version||1,protected:protectedCount});const cfg=structuredClone(updated.defaults);cfg.maxes={...cfg.maxes,...st.config?.maxes};for(const [key,v] of Object.entries(cfg.variation||{})){const oldVariation=st.config?.variation?.[key];if(oldVariation?.override>0)v.override=oldVariation.override}st.config=cfg;item.data=st;await put('profileStates',item);if(item.profileId===profile?.id)states[p.id]=st}
-  programs=programs.map(x=>x.id===p.id?updated:x);if(isEnrolled(p.id))activate(p.id);else await enrol(p.id);
-  closedModal();switchTo('home');alertUser(`Update installed · ${protectedCount} started sessions protected`);
- }else{await put('programmes',p);programs.push(p);closedModal();await enrol(p.id);alertUser('Programme added to your profile')}
+async function applyProgramme(p,options={}){
+ Imp.validate(p);
+ const old=programs.find(x=>x.id===p.id);
+ if(!old){await put('programmes',structuredClone(p));programs.push(structuredClone(p));if(options.enrol)await enrol(p.id);return {installed:true,protectedCount:0}}
+ // No rollback on automatic cloud sync. A manual import can replace the current
+ // plan only with explicit confirmation and a NEW version.
+ if(Number(p.version)<=Number(old.version||1)&&options.auto)return {installed:false,protectedCount:0};
+ const saved=(await all('profileStates')).filter(x=>x.programId===p.id),union={logs:{},readiness:{}};
+ for(const item of saved){Object.assign(union.logs,item.data?.logs||{});Object.assign(union.readiness,item.data?.readiness||{})}
+ const {updated,protectedCount}=mergeUpdatedProgramme(old,p,union);
+ await put('programmes',updated);
+ for(const item of saved){
+  const st=item.data||freshState(old);st.history=st.history||[];
+  st.history.push({date:new Date().toISOString(),from:old.version||1,to:p.version||1,protected:protectedCount,source:options.auto?'admin published':'manual import'});
+  const cfg=structuredClone(updated.defaults);
+  cfg.maxes={...cfg.maxes,...st.config?.maxes};
+  cfg.movementMaxes={...(cfg.movementMaxes||{}),...(st.config?.movementMaxes||{})};
+  for(const [key,v] of Object.entries(cfg.variation||{})){
+   const oldVariation=st.config?.variation?.[key];
+   if(oldVariation?.override>0){v.override=oldVariation.override;if(!(Number(cfg.movementMaxes[key])>0))cfg.movementMaxes[key]=oldVariation.override}
+  }
+  st.config=cfg;item.data=st;await put('profileStates',item);
+  if(item.profileId===profile?.id)states[p.id]=st;
+ }
+ programs=programs.map(x=>x.id===p.id?updated:x);
+ if(activeId===p.id&&isEnrolled(p.id))activate(p.id);
+ if(options.enrol&&!isEnrolled(p.id))await enrol(p.id);
+ return {installed:true,protectedCount};
+}
+async function syncPublishedPrograms(quiet=false){
+ if(!cloudMode||!Cloud.user)return {updated:0,available:0};
+ const releases=await Cloud.publishedPrograms();let updated=0,available=0;
+ for(const release of releases){
+  try{
+   const p=Imp.validate(release.content);
+   if(p.id!==release.program_id||Number(p.version)!==Number(release.version))throw Error('Programme identity/version mismatch');
+   const previous=programs.find(x=>x.id===p.id);
+   if(!previous){await applyProgramme(p);available++}
+   else if(Number(p.version)>Number(previous.version||1)){await applyProgramme(p,{auto:true});updated++}
+  }catch(error){console.warn('Skipped invalid published programme',release.program_id,error);if(!quiet)alertUser('Could not install '+release.program_id+': '+error.message)}
+ }
+ if(!quiet)alertUser(`${updated} programme update(s) installed; ${available} new programme(s) in library`);
+ return {updated,available};
+}
+async function installProgramme(){const p=pendingImport;if(!p)return;
+ try{
+  // Administrators explicitly choose global publication. A personal import never
+  // silently changes another athlete's plan.
+  const result=await applyProgramme(p,{enrol:true});closedModal();switchTo('home');
+  alertUser(result.protectedCount?`Programme installed · ${result.protectedCount} started sessions preserved`:'Programme installed');
+ }catch(error){alertUser(error.message);console.error(error)}
+}
+async function publishProgramme(){
+ if(!pendingImport||!cloudMode||Cloud.account?.role!=='admin')return;
+ const p=pendingImport;
+ try{
+  await Cloud.publishProgram(p);
+  closedModal();alertUser(`${p.title} v${p.version} published. Athletes receive updates at next sign-in or sync.`);
+ }catch(error){alertUser(error.message);console.error(error)}
 }
 async function restoreBackup(file){try{
  const obj=JSON.parse(await file.text());if(obj.format!=='PEAK_TRAINING_BACKUP'||!Array.isArray(obj.programmes))throw Error('Not a PEAK Training backup');
@@ -253,7 +306,7 @@ async function setLog(key,field,value){
   else if(value==='')delete log[field];
   else{
    const n=Number(value),prescribed=Number(before.reps);
-   if(!Number.isFinite(n)||n<0||(field==='rpe'&&(n<1||n>10))||(field==='weight'&&n>1500)||(field==='reps'&&(!Number.isInteger(n)||n>(Number.isFinite(prescribed)?prescribed:1000)))){alertUser('Invalid '+field+(field==='reps'?' — enter completed reps, not planned reps':' '));render();return}
+   if(!Number.isFinite(n)||n<0||(field==='rpe'&&(n<1||n>10))||(field==='weight'&&n>1500)||(field==='reps'&&(!Number.isInteger(n)||n>(['AMRAP','REP_MAX'].includes(before.setType)?1000:Number.isFinite(prescribed)?prescribed:1000)))){alertUser('Invalid '+field+(field==='reps'?' — enter completed reps, not planned reps':' '));render();return}
    log[field]=n;
   }
   if(before.kind==='BAR'&&hasEntry(log)&&!C.hasNum(log.lockedPct)){log.lockedPct=before.applied;log.lockedKg=before.target}
@@ -269,9 +322,9 @@ async function skipMovement(keys,checked){
  for(const row of matching){if(checked)S.logs[row.key]={status:'skipped',at:new Date().toISOString()};else if(S.logs[row.key]?.status==='skipped')delete S.logs[row.key]}
  await saveState();render();alertUser(checked?'Movement skipped':'Movement restored');
 }
-async function updateSetting(group,key,value){const v=Number(value);if(!Number.isFinite(v)||v<0||v>2000){alertUser('Invalid setting');render();return}if(group==='variation'){if(!S.config.variation[key])return;S.config.variation[key].override=v||null}else if(S.config[group]&&key in S.config[group])S.config[group][key]=v;await saveState();render();alertUser('Setting saved')}
+async function updateSetting(group,key,value){const v=Number(value);if(!Number.isFinite(v)||v<0||v>2000){alertUser('Invalid setting');render();return}if(group==='movementMaxes'){S.config.movementMaxes=S.config.movementMaxes||{};S.config.movementMaxes[key]=v||0}else if(group==='variation'){if(!S.config.variation[key])return;S.config.variation[key].override=v||null}else if(S.config[group]&&key in S.config[group])S.config[group][key]=v;await saveState();render();alertUser('Setting saved')}
 async function initData(preferredProfile){
- const builtin=await (await fetch('builtin-program.json')).json();const records=await all('programmes');
+ const builtin=await (await fetch('builtin-program.json')).json();window.PEAK_TEMPLATE_DEFAULTS=structuredClone(builtin.defaults);const records=await all('programmes');
  const savedBuiltin=records.find(p=>p.id===builtin.id);
  if(!savedBuiltin){await put('programmes',builtin);records.push(builtin)}
  else if(savedBuiltin.title==='PEAK / 105 · 20-week competition peak'){
@@ -296,6 +349,9 @@ async function initData(preferredProfile){
  const id=preferredProfile||localStorage.getItem('peak-active-profile');
  const selected=profiles.find(p=>p.id===id)||(profiles.length===1?profiles[0]:null);
  await loadProfile(selected);
+ if(cloudMode){
+  try{await syncPublishedPrograms(true)}catch(error){console.warn('Programme updates unavailable:',error.message);alertUser(error.message)}
+ }
 }
 document.addEventListener('click',async e=>{
  const selectedAdmin=e.target.closest('[data-admin-user]');if(selectedAdmin&&cloudMode&&Cloud.account?.role==='admin'){adminSelected=selectedAdmin.dataset.adminUser;adminDocs=null;adminProgramme=null;adminLoading=true;adminError='';render();try{adminDocs=await Cloud.adminAthleteDocuments(adminSelected)}catch(err){adminError=err.message}finally{adminLoading=false;render()}return}
@@ -323,7 +379,9 @@ document.addEventListener('click',async e=>{
   for(const item of await all('enrolments'))if(item.profileId===person.id)await remove('enrolments',item.id);
   for(const item of await all('profileStates'))if(item.profileId===person.id)await remove('profileStates',item.id);
   await remove('profiles',person.id);profiles=profiles.filter(p=>p.id!==person.id);await loadProfile(null);render();alertUser('Profile deleted');return}
- if(cmd==='import'){$('importFile').click();return}
+ if(cmd==='import'||(cmd==='adminupload'&&cloudMode&&Cloud.account?.role==='admin')){$('importFile').click();return}
+ if(cmd==='publishprogramme'&&cloudMode&&Cloud.account?.role==='admin'){await publishProgramme();return}
+ if(cmd==='syncprogrammes'&&cloudMode){try{await syncPublishedPrograms();render()}catch(error){alertUser(error.message)}return}
  if(cmd==='restore'){$('restoreFile').click();return}
  if(cmd==='exportcsv'&&P){download(slug(P.title)+'_training.csv',C.makeCSV(S),'text/csv;charset=utf-8');alertUser('CSV exported');return}
  if(cmd==='backup'){await backup();alertUser('All local profiles backed up');return}

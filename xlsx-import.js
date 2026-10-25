@@ -69,7 +69,10 @@ function convert(sheets){const info=sheets.programme_info,exerciseRows=sheets.ex
  required(inf.title,'Programme Info: Title is required');required(inf.programme_id,'Programme Info: Programme ID is required');
  const id=cleanId(inf.programme_id);required(id.length>=3,'Programme ID must contain at least three letters/numbers');
  const weeks=num(inf.weeks,0),daysPerWeek=num(inf.days_per_week,0);required(weeks>=1&&weeks<=104&&daysPerWeek>=1&&daysPerWeek<=7,'Weeks must be 1–104 and training days must be 1–7');
- const defaults=JSON.parse(JSON.stringify(root.PROGRAM.defaults));
+ const baseDefaults=root.PEAK_TEMPLATE_DEFAULTS||root.PROGRAM?.defaults;
+ required(baseDefaults?.maxes&&baseDefaults?.settings,'Default training settings not loaded. Refresh PEAK and try importing again.');
+ const defaults=JSON.parse(JSON.stringify(baseDefaults));
+ defaults.movementMaxes={};
  defaults.maxes.SQ=num(inf.squat_max_kg,240);defaults.maxes.BP=num(inf.bench_max_kg,200);defaults.maxes.DL=num(inf.deadlift_max_kg,300);
  for(const key of ['SQ','BP','DL'])required(defaults.maxes[key]>0&&defaults.maxes[key]<=1000,'Invalid competition 1RM: '+key);
  defaults.variation={};defaults.offsets={SQ:0,BP:0,DL:0};
@@ -82,8 +85,13 @@ function convert(sheets){const info=sheets.programme_info,exerciseRows=sheets.ex
   const name=String(r.name||code).trim().slice(0,100);required(name.length>0,'Exercise name required for '+code);
   const ratio=num(r.ratio,1),override=num(r.max_override_kg,0),offset=num(r.rpe_offset,0);
   required(ratio>0&&ratio<=2&&override>=0&&override<=1000,'Invalid max/ratio for '+code);
-  ex[code]={code,name,family,kind};
-  if(kind==='BAR'&&!['SQ','BP','DL'].includes(code)){defaults.variation[code]={name,ratio,family,override:override||null};defaults.offsets[code]=offset}
+  // Blank/omitted means the existing default: RPE safeguards apply.
+  // Set false on movements for which RPE caps should not be used at all.
+  const capSetting=String(r.rpe_cap_applies??'').trim().toLowerCase();
+  required(['','yes','no','true','false','1','0','y','n'].includes(capSetting),'Exercises row '+r._row+': RPE cap applies must be YES or NO');
+  const rpeCapEnabled=!['no','false','0','n'].includes(capSetting);
+  ex[code]={code,name,family,kind,rpeCapEnabled};
+  if(kind==='BAR'&&!['SQ','BP','DL'].includes(code)){defaults.variation[code]={name,ratio,family,override:override||null};if(override>0)defaults.movementMaxes[code]=override;defaults.offsets[code]=offset}
   if(kind==='BAR'&&['SQ','BP','DL'].includes(code))defaults.offsets[code]=offset;
  }
  for(const base of ['SQ','BP','DL'])if(!ex[base])ex[base]={code:base,name:{SQ:'Competition squat',BP:'Competition bench',DL:'Competition deadlift'}[base],family:base,kind:'BAR'};
@@ -101,19 +109,27 @@ function convert(sheets){const info=sheets.programme_info,exerciseRows=sheets.ex
   const key=sid+'-'+code,ordinal=(counts.get(key)||0)+1;counts.set(key,ordinal);
   const setid=cleanId(r.set_id||`${key}-${String(ordinal).padStart(2,'0')}`);
   required(!seenIds.has(setid),'Duplicate Set ID '+setid+' at row '+r._row);seenIds.add(setid);
+  const rawType=String(r.set_type||'STANDARD').toUpperCase().trim().replace(/[ -]+/g,'_');
+  const setType=rawType==='REPMAX'?'REP_MAX':rawType;
+  required(['STANDARD','AMRAP','REP_MAX'].includes(setType),'Invalid Set type at Sessions row '+r._row+' (use STANDARD, AMRAP or REP_MAX)');
   const repsText=String(r.reps||'').trim();required(repsText,'Repetitions required at Sessions row '+r._row);
   if(e.kind==='BAR'){
-   const reps=num(r.reps);const pct=percent(r.percent_1rm);
-   required(Number.isInteger(reps)&&reps>=1&&reps<=30,'Barbell repetitions must be a whole number at row '+r._row);
-   required(pct!==null&&pct>.1&&pct<=1.2,'Barbell %1RM must be 0.10–1.20 at row '+r._row);
+   const reps=num(r.reps);const pct=setType==='STANDARD'?percent(r.percent_1rm):null;
+   required(Number.isInteger(reps)&&reps>=1&&reps<=(setType==='AMRAP'?100:30),'Barbell target repetitions must be a whole number at row '+r._row);
+   if(setType==='STANDARD')required(pct!==null&&pct>.1&&pct<=1.2,'Barbell %1RM must be 0.10–1.20 at row '+r._row);
    required(['RAMP','WORK'].includes(stage),'Barbell stage must be RAMP or WORK at row '+r._row);
+   const targetKg=setType==='AMRAP'?num(r.target_weight_kg,NaN):null;
+   const goalKg=setType==='REP_MAX'?num(r.goal_weight_kg,NaN):null;
+   if(setType==='AMRAP')required(Number.isFinite(targetKg)&&targetKg>0&&targetKg<=1500,'AMRAP set requires Target weight kg (greater than 0) at Sessions row '+r._row);
+   if(setType==='REP_MAX')required(Number.isFinite(goalKg)&&goalKg>0&&goalKg<=1500,'REP_MAX set requires Goal weight kg (greater than 0) at Sessions row '+r._row);
    let preceding=0;
-   for(let i=s.sets.length-1;i>=0;i--){const prev=s.sets[i];if(prev.code!==code)break;if(prev.kind==='BAR'&&prev.stage==='WORK')preceding++}
-   s.sets.push({id:setid,kind:'BAR',code,family:e.family,name:e.name,stage,pct,reps,repsText,preceding,step:String(r.set_number||ordinal),week,day});
+   for(let i=s.sets.length-1;i>=0;i--){const prev=s.sets[i];if(prev.code!==code)break;if(prev.kind==='BAR'&&prev.stage==='WORK'&&(prev.setType||'STANDARD')==='STANDARD')preceding++}
+   s.sets.push({id:setid,kind:'BAR',setType,code,family:e.family,name:e.name,stage,pct,reps,repsText,targetKg,goalKg,rpeCapEnabled:e.rpeCapEnabled,preceding,step:String(r.set_number||ordinal),week,day});
   }else{
+   required(setType==='STANDARD','AMRAP and REP_MAX are barbell set types. Check Exercises Kind at Sessions row '+r._row);
    const target=r.target_rpe!==''?num(r.target_rpe,null):null;
    required(target===null||(target>=1&&target<=10),'Accessory target RPE must be 1–10');
-   s.sets.push({id:setid,kind:'ACC',code,family:'ACC',name:e.name,stage:'ACC',reps:repsText,repsText,count:repeats,rir:String(r.rir||''),targetRpe:target,week,day});
+   s.sets.push({id:setid,kind:'ACC',code,family:'ACC',name:e.name,stage:'ACC',reps:repsText,repsText,count:repeats,rir:String(r.rir||''),targetRpe:e.rpeCapEnabled?target:null,rpeCapEnabled:e.rpeCapEnabled,week,day});
   }
  }
  required(sessions.size>0,'No valid sessions found');
@@ -122,7 +138,7 @@ function convert(sheets){const info=sheets.programme_info,exerciseRows=sheets.ex
  validate(result);return result;
 }
 function validate(p){required(p&&typeof p==='object'&&Array.isArray(p.sessions)&&Array.isArray(p.weeks)&&p.defaults,'Invalid programme structure');required(cleanId(p.id).length>=3,'Programme ID missing');required(p.sessions.length>0&&p.sessions.length<=800,'Invalid session count');required(p.weeks.length>0&&p.weeks.length<=104,'Invalid programme weeks');required(p.defaults?.maxes&&p.defaults?.settings&&p.defaults?.variation&&Array.isArray(p.defaults.lookup),'Invalid loading settings');
- const setids=new Set();for(const s of p.sessions){required(s.id&&Number.isInteger(s.week)&&Array.isArray(s.sets),'Invalid session');for(const set of s.sets){required(set.id&&!setids.has(set.id),'Missing or duplicate set ID');setids.add(set.id);required(['BAR','ACC'].includes(set.kind),'Invalid set kind');if(set.kind==='BAR')required(Number.isFinite(set.pct)&&set.pct>0&&Number.isFinite(Number(set.reps)),'Invalid barbell set')}}
+ const setids=new Set();for(const s of p.sessions){required(s.id&&Number.isInteger(s.week)&&Array.isArray(s.sets),'Invalid session');for(const set of s.sets){required(set.id&&!setids.has(set.id),'Missing or duplicate set ID');setids.add(set.id);required(['BAR','ACC'].includes(set.kind),'Invalid set kind');required(set.rpeCapEnabled===undefined||typeof set.rpeCapEnabled==='boolean','Invalid RPE cap flag on '+set.id);const type=set.setType||'STANDARD';required(['STANDARD','AMRAP','REP_MAX'].includes(type),'Invalid set type');if(set.kind==='BAR'){required(Number.isInteger(Number(set.reps))&&Number(set.reps)>0,'Invalid barbell target reps');if(type==='STANDARD')required(Number.isFinite(set.pct)&&set.pct>0,'Invalid standard set percentage');if(type==='AMRAP')required(Number(set.targetKg)>0&&Number(set.targetKg)<=1500,'Invalid AMRAP target kg');if(type==='REP_MAX')required(Number(set.goalKg)>0&&Number(set.goalKg)<=1500,'Invalid rep-max goal kg')}else required(type==='STANDARD','Accessory cannot be AMRAP/REP_MAX')}}
  return p;
 }
 async function parseFile(file){required(file.size<12_000_000,'Import is limited to 12 MB');if(/\.xlsx$/i.test(file.name)){const sheets=await readXLSX(await file.arrayBuffer());return convert(sheets)}const json=JSON.parse(await file.text());return validate(json.program||json)}

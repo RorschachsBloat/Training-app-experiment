@@ -89,6 +89,23 @@ async function adminAthleteDocuments(ownerId){
  }
  return documents;
 }
-root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,sendPasswordReset,finishPasswordReset,changeEmail,
+async function publishedPrograms(){
+ assertUser();
+ const {data,error}=await client.from('peak_programme_releases')
+  .select('program_id,version,content,published_at').order('published_at',{ascending:true});
+ if(error)throw Error('Cannot load published programmes: '+error.message+' (run PEAK_V5_PUBLISHING.sql in Supabase)');
+ return data||[];
+}
+async function publishProgram(program){
+ assertAdmin();
+ const id=String(program.id||'');const version=Number(program.version);
+ if(!/^[a-z0-9_-]{3,90}$/.test(id)||!Number.isInteger(version)||version<1)throw Error('A valid Programme ID and integer Version are required');
+ const {error}=await client.from('peak_programme_releases').upsert({
+  program_id:id,version,content:program,published_by:identity.id,
+  published_at:new Date().toISOString()
+ },{onConflict:'program_id'});
+ if(error)throw Error('Publication failed: '+error.message);
+}
+root.PeakCloud={enabled,initialize,refresh,login,signup,signout,all,get,put,remove,adminOverview,adminAthleteDocuments,publishedPrograms,publishProgram,sendPasswordReset,finishPasswordReset,changeEmail,
  get user(){return identity},get account(){return account},get recoveryPending(){return recoveryPending}};
 })(window);
